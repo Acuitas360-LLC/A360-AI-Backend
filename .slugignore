@@ -1,0 +1,6 @@
+Crinetics_backend_files/
+Geron_backend_files/
+__pycache__/
+*.pyc
+.env
+.env.*

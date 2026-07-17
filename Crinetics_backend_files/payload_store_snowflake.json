@@ -1,0 +1,1647 @@
+{
+  "ids_in_order": [
+    "2026-03-19T09:36:16.825747+00:00Z",
+    "2026-03-19T09:42:04.686256+00:00Z",
+    "2026-03-19T09:47:07.580054+00:00Z",
+    "2026-03-17T09:17:45.151364+00:00Z",
+    "2026-03-17T09:18:51.743072+00:00Z",
+    "2026-03-16T09:31:25.501790+00:00Z",
+    "2026-03-16T14:56:23.124020+00:00Z",
+    "2026-03-12T06:31:32.309347+00:00Z",
+    "2026-03-10T07:04:35.724001+00:00Z",
+    "2026-03-09T18:23:30.123014+00:00Z",
+    "2026-03-09T15:33:57.722570+00:00Z",
+    "2026-03-09T15:37:53.083927+00:00Z",
+    "2026-03-17T10:30:14.235763+00:00Z",
+    "2026-03-17T09:17:45.151364+00:00Z",
+    "2026-03-16T09:31:25.501790+00:00Z",
+    "2026-03-16T09:33:41.392632+00:00Z",
+    "2026-03-16T14:56:23.124020+00:00Z",
+    "2026-03-16T15:02:03.719972+00:00Z",
+    "2026-03-16T15:12:01.575120+00:00Z",
+    "2026-03-14T09:04:09.230362+00:00Z"
+  ],
+  "payload_store": {
+    "2026-03-19T09:36:16.825747+00:00Z": {
+      "run_id": "2026-03-19T09:36:16.825747+00:00Z",
+      "question": "Are we too dependent on certain regions for revenue?",
+      "query_decomposition": {
+        "intent_summary": "Assess revenue dependency by measuring each campus region's contribution to total national Relmora sales over the most recent 52 weeks of available data, and flag regions with high concentration.",
+        "tables": [
+          "data_867"
+        ],
+        "filters": [
+          {
+            "column": "week_end_date",
+            "operator": ">=",
+            "value": "derived:rolling_window_52_weeks_from_max_week_end_date"
+          },
+          {
+            "column": "week_end_date",
+            "operator": "<=",
+            "value": "derived:max_week_end_date"
+          }
+        ],
+        "aggregations": [
+          {
+            "metric_name": "region_sales_52w",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "campus_region"
+          },
+          {
+            "metric_name": "nation_sales_52w",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          }
+        ],
+        "subqueries": [
+          {
+            "name": "max_week_end_date_cte",
+            "purpose": "Identify the most recent week_end_date in the dataset to anchor the default 52-week window.",
+            "logic": "Compute MAX(week_end_date) from data_867 and expose it as max_week_end_date."
+          },
+          {
+            "name": "time_window_cte",
+            "purpose": "Define the default analysis window and its boundaries.",
+            "logic": "Set window_end_date = max_week_end_date; set window_start_date = window_end_date minus 51 weeks (inclusive 52-week span)."
+          },
+          {
+            "name": "region_agg_cte",
+            "purpose": "Aggregate 52-week sales by campus_region.",
+            "logic": "Filter rows to [window_start_date, window_end_date] using week_end_date; group by campus_region; compute SUM(relmora_total_mg) as region_sales_52w."
+          },
+          {
+            "name": "nation_agg_cte",
+            "purpose": "Aggregate 52-week national sales across all regions for denominator.",
+            "logic": "Filter rows to [window_start_date, window_end_date] using week_end_date; compute SUM(relmora_total_mg) as nation_sales_52w."
+          },
+          {
+            "name": "contribution_cte",
+            "purpose": "Compute each region's contribution percent of national sales and concentration ranking.",
+            "logic": "Join region_agg_cte to nation_agg_cte (cross join); compute region_contribution_52w = (region_sales_52w / nation_sales_52w) * 100; compute region_rank by region_sales_52w descending."
+          },
+          {
+            "name": "concentration_summary_cte",
+            "purpose": "Provide overall concentration indicators to determine dependency on a few regions.",
+            "logic": "From contribution_cte compute top_1_region_contribution_52w as contribution of rank=1; top_2_regions_contribution_52w as sum of contributions for ranks<=2; top_3_regions_contribution_52w as sum of contributions for ranks<=3."
+          }
+        ],
+        "group_by": [
+          "campus_region"
+        ],
+        "order_by": [
+          {
+            "column": "region_sales_52w",
+            "direction": "DESC"
+          }
+        ],
+        "limit": 10,
+        "final_output": {
+          "columns": [
+            "window_start_date",
+            "window_end_date",
+            "campus_region",
+            "region_sales_52w",
+            "nation_sales_52w",
+            "region_contribution_52w%",
+            "region_rank",
+            "top_1_region_contribution_52w%",
+            "top_2_regions_contribution_52w%",
+            "top_3_regions_contribution_52w%"
+          ],
+          "row_granularity": "per_group"
+        },
+        "validation_rules": [
+          "Use data_867 as the only source table for this question.",
+          "Use relmora_total_mg (not relmora_total_sls) because the question is about relmora revenue dependency without explicit market share or competitor comparison request.",
+          "Default time window is the most recent 52 weeks of available data when the user does not specify a period.",
+          "Derive max_week_end_date using MAX(week_end_date); do not use system date; do not use MAX(month_year) or MAX(quarter_year).",
+          "Output must explicitly include window_start_date and window_end_date.",
+          "Region contribution must use national total (all rows in the window) as denominator and must be expressed with a trailing '%'.",
+          "Also include the corresponding absolute sales values alongside contribution metrics (region_sales_52w and nation_sales_52w).",
+          "Order regions by region_sales_52w descending to highlight concentration; limit output to top 10 regions.",
+          "All computations related to percentage values must be reported as integers (no decimals) before output, and include the '%' symbol in the label."
+        ]
+      },
+      "final_sql": "WITH\nmax_week_end_date_cte AS (\n  SELECT MAX(d.week_end_date) AS max_week_end_date\n  FROM data_867 d\n),\ntime_window_cte AS (\n  SELECT\n    m.max_week_end_date AS window_end_date,\n    DATE_SUB(m.max_week_end_date, INTERVAL 51 WEEK) AS window_start_date\n  FROM max_week_end_date_cte m\n),\nregion_agg_cte AS (\n  SELECT\n    d.campus_region,\n    SUM(d.relmora_total_mg) AS region_sales_52w\n  FROM data_867 d\n  CROSS JOIN time_window_cte tw\n  WHERE d.week_end_date >= tw.window_start_date\n    AND d.week_end_date <= tw.window_end_date\n  GROUP BY d.campus_region\n),\nnation_agg_cte AS (\n  SELECT\n    SUM(d.relmora_total_mg) AS nation_sales_52w\n  FROM data_867 d\n  CROSS JOIN time_window_cte tw\n  WHERE d.week_end_date >= tw.window_start_date\n    AND d.week_end_date <= tw.window_end_date\n),\ncontribution_cte AS (\n  SELECT\n    r.campus_region,\n    r.region_sales_52w,\n    n.nation_sales_52w,\n    DENSE_RANK() OVER (ORDER BY r.region_sales_52w DESC) AS region_rank,\n    ROUND((r.region_sales_52w / NULLIF(n.nation_sales_52w, 0)) * 100, 0) AS region_contribution_52w_pct_int\n  FROM region_agg_cte r\n  CROSS JOIN nation_agg_cte n\n),\nconcentration_summary_cte AS (\n  SELECT\n    SUM(CASE WHEN c.region_rank = 1 THEN c.region_contribution_52w_pct_int ELSE 0 END) AS top_1_region_contribution_52w_pct_int,\n    SUM(CASE WHEN c.region_rank <= 2 THEN c.region_contribution_52w_pct_int ELSE 0 END) AS top_2_regions_contribution_52w_pct_int,\n    SUM(CASE WHEN c.region_rank <= 3 THEN c.region_contribution_52w_pct_int ELSE 0 END) AS top_3_regions_contribution_52w_pct_int\n  FROM contribution_cte c\n)\nSELECT\n  MAX(tw.window_start_date) AS window_start_date,\n  MAX(tw.window_end_date) AS window_end_date,\n  c.campus_region,\n  c.region_sales_52w,\n  c.nation_sales_52w,\n  CONCAT(c.region_contribution_52w_pct_int, '%') AS `region_contribution_52w%`,\n  c.region_rank,\n  CONCAT(MAX(cs.top_1_region_contribution_52w_pct_int), '%') AS `top_1_region_contribution_52w%`,\n  CONCAT(MAX(cs.top_2_regions_contribution_52w_pct_int), '%') AS `top_2_regions_contribution_52w%`,\n  CONCAT(MAX(cs.top_3_regions_contribution_52w_pct_int), '%') AS `top_3_regions_contribution_52w%`\nFROM contribution_cte c\nCROSS JOIN time_window_cte tw\nCROSS JOIN concentration_summary_cte cs\nGROUP BY\n  c.campus_region,\n  c.region_sales_52w,\n  c.nation_sales_52w,\n  c.region_contribution_52w_pct_int,\n  c.region_rank\nORDER BY c.region_sales_52w DESC\nLIMIT 10;",
+      "human_verdict": "SUCCESS",
+      "embedding text": "Intent: Assess revenue dependency by measuring each campus region's contribution to total national relmora sales over the most recent 52 weeks of available data, and flag regions with high concentration.\nUser Question: Are we too dependent on certain regions for revenue?"
+    },
+    "2026-03-19T09:42:04.686256+00:00Z": {
+      "run_id": "2026-03-19T09:42:04.686256+00:00Z",
+      "question": "How does our breadth look like?",
+      "query_decomposition": {
+        "intent_summary": "Assess breadth of relmora distribution/coverage by counting active campus accounts (relmora_total_mg > 0) and total shipped volume over the most recent 52 weeks of available data, at the national level (no campus grouping).",
+        "tables": [
+          "data_867"
+        ],
+        "filters": [
+          {
+            "column": "week_end_date",
+            "operator": ">=",
+            "value": "derived:rolling_window_52_weeks_from_max_week_end_date"
+          },
+          {
+            "column": "week_end_date",
+            "operator": "<=",
+            "value": "derived:max_week_end_date"
+          }
+        ],
+        "aggregations": [
+          {
+            "metric_name": "active_campus_accounts_52w",
+            "function": "COUNT",
+            "column": "campus_id",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "sales_mg_52w",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          }
+        ],
+        "subqueries": [
+          {
+            "name": "max_week_end_date_cte",
+            "purpose": "Identify the most recent week_end_date available in data_867 to anchor rolling windows.",
+            "logic": "Compute MAX(week_end_date) from data_867 and expose as max_week_end_date."
+          },
+          {
+            "name": "active_accounts_filter_logic",
+            "purpose": "Ensure breadth/account status metrics consider only records with positive relmora volume.",
+            "logic": "For active campus account counting, include only rows where relmora_total_mg > 0; count distinct campus_id after applying the 52-week date window."
+          },
+          {
+            "name": "rolling_52w_window_bounds",
+            "purpose": "Define explicit start and end boundaries for the last 52 weeks based on max_week_end_date.",
+            "logic": "Set window_end_date = max_week_end_date; set window_start_date = (max_week_end_date - 51 weeks) aligned to week_end_date-based weeks."
+          }
+        ],
+        "group_by": [],
+        "order_by": [],
+        "limit": null,
+        "final_output": {
+          "columns": [
+            "window_start_date_52w",
+            "window_end_date_52w",
+            "active_campus_accounts_52w",
+            "sales_mg_52w"
+          ],
+          "row_granularity": "single_row"
+        },
+        "validation_rules": [
+          "Default time period to the most recent 52 weeks when user does not specify a time window.",
+          "Determine the latest available period using MAX(week_end_date); do not use system date.",
+          "Breadth/account ordering status metrics must consider only records where relmora_total_mg > 0 and must count DISTINCT campus_id.",
+          "Use data_867 and relmora_total_mg (not relmora_total_sls) because the question is not about market share or competitor comparisons.",
+          "Because the request is not explicitly campus-level output, do not group by campus_id or campus_account_name; return a national single-row summary.",
+          "Output must explicitly include the time window boundaries (start and end dates) for the 52-week period."
+        ]
+      },
+      "final_sql": "WITH max_week_end_date_cte AS (\n  SELECT MAX(week_end_date) AS max_week_end_date\n  FROM data_867\n),\nrolling_52w_window_bounds AS (\n  SELECT\n    max_week_end_date AS window_end_date_52w,\n    DATE_SUB(max_week_end_date, INTERVAL 51 WEEK) AS window_start_date_52w\n  FROM max_week_end_date_cte\n)\nSELECT\n  MAX(w.window_start_date_52w) AS window_start_date_52w,\n  MAX(w.window_end_date_52w) AS window_end_date_52w,\n  COUNT(DISTINCT CASE WHEN d.relmora_total_mg > 0 THEN d.campus_id END) AS active_campus_accounts_52w,\n  SUM(d.relmora_total_mg) AS sales_mg_52w\nFROM data_867 d\nCROSS JOIN rolling_52w_window_bounds w\nWHERE d.week_end_date >= w.window_start_date_52w\n  AND d.week_end_date <= w.window_end_date_52w;",
+      "human_verdict": "SUCCESS",
+      "embedding text": "Intent: Assess breadth of relmora distribution/coverage by counting active campus accounts (rytel_total_mg > 0) and total shipped volume over the most recent 52 weeks of available data, at the national level (no campus grouping).\nUser Question: How does our breadth look like?"
+    },
+    "2026-03-19T09:47:07.580054+00:00Z": {
+      "run_id": "2026-03-19T09:47:07.580054+00:00Z",
+      "question": "How are we doing in terms of adding new businesses?",
+      "query_decomposition": {
+        "intent_summary": "Assess performance in adding new campus (child) businesses by counting newly active campus_ids in the most recent 13 weeks versus the prior 13 weeks, including absolute counts and growth percent, using only accounts with relmora activity (relmora_total_mg > 0).",
+        "tables": [
+          "data_867"
+        ],
+        "filters": [
+          {
+            "column": "relmora_total_mg",
+            "operator": ">",
+            "value": 0
+          }
+        ],
+        "aggregations": [
+          {
+            "metric_name": "new_business_accounts_r13w",
+            "function": "COUNT",
+            "column": "campus_id",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "new_business_accounts_p13w",
+            "function": "COUNT",
+            "column": "campus_id",
+            "group_level": "none"
+          }
+        ],
+        "subqueries": [
+          {
+            "name": "max_week_end_date_cte",
+            "purpose": "Identify the most recent week_end_date available in data_867 to anchor rolling windows.",
+            "logic": "Compute MAX(week_end_date) from data_867."
+          },
+          {
+            "name": "campus_first_active_week_cte",
+            "purpose": "Determine when each campus_id first became active (first week with relmora_total_mg > 0).",
+            "logic": "From data_867 filtered to relmora_total_mg > 0, group by campus_id and compute MIN(week_end_date) as first_active_week_end_date."
+          },
+          {
+            "name": "rolling_windows_cte",
+            "purpose": "Define R13W and P13W time boundaries based on max_week_end_date.",
+            "logic": "Using max_week_end_date, define R13W as the 13 week_end_date values ending at max_week_end_date (inclusive) and P13W as the immediately preceding 13 week_end_date values."
+          },
+          {
+            "name": "new_business_counts_cte",
+            "purpose": "Count distinct new campus businesses in R13W and P13W based on first_active_week_end_date.",
+            "logic": "Join campus_first_active_week_cte to rolling_windows_cte and count DISTINCT campus_id where first_active_week_end_date falls within R13W for new_business_accounts_r13w and within P13W for new_business_accounts_p13w."
+          },
+          {
+            "name": "growth_calc_cte",
+            "purpose": "Compute growth percent for new businesses from P13W to R13W and include required time boundaries.",
+            "logic": "Compute growth_new_business_r13w_vs_p13w_pct = CASE WHEN new_business_accounts_p13w = 0 AND new_business_accounts_r13w > 0 THEN 100 WHEN new_business_accounts_p13w = 0 AND new_business_accounts_r13w = 0 THEN 0 ELSE ((new_business_accounts_r13w - new_business_accounts_p13w) / new_business_accounts_p13w) * 100 END; convert to integer before output; also output r13w_start_week_end_date, r13w_end_week_end_date, p13w_start_week_end_date, p13w_end_week_end_date from rolling_windows_cte."
+          }
+        ],
+        "group_by": [],
+        "order_by": [],
+        "limit": null,
+        "final_output": {
+          "columns": [
+            "p13w_start_week_end_date",
+            "p13w_end_week_end_date",
+            "new_business_accounts_p13w",
+            "r13w_start_week_end_date",
+            "r13w_end_week_end_date",
+            "new_business_accounts_r13w",
+            "growth_new_business_r13w_vs_p13w_pct"
+          ],
+          "row_granularity": "single_row"
+        },
+        "validation_rules": [
+          "Default growth timeframe when unspecified: R13W vs P13W.",
+          "All account ordering status metrics (new/active/total accounts) must consider only records with relmora_total_mg > 0.",
+          "Campus-level is the default; do not roll up to parent entities.",
+          "Determine max date using MAX(week_end_date) and do not use system date.",
+          "Rolling windows must be anchored to max_week_end_date and defined as consecutive week_end_date buckets.",
+          "Output must explicitly include time period boundaries (start and end week_end_date for both R13W and P13W).",
+          "Growth must be expressed as a percentage with a '%' appended in presentation, and must be converted to an integer (no decimals) before reporting.",
+          "If previous period value is 0 and current period value > 0, growth must be reported as 100%.",
+          "Always accompany the growth metric with the corresponding absolute counts for both periods."
+        ]
+      },
+      "final_sql": "WITH\nmax_week_end_date_cte AS (\n  SELECT MAX(week_end_date) AS max_week_end_date\n  FROM data_867\n),\nrolling_windows_cte AS (\n  SELECT\n    m.max_week_end_date AS r13w_end_week_end_date,\n    DATE_SUB(m.max_week_end_date, INTERVAL 12 WEEK) AS r13w_start_week_end_date,\n    DATE_SUB(m.max_week_end_date, INTERVAL 13 WEEK) AS p13w_end_week_end_date,\n    DATE_SUB(m.max_week_end_date, INTERVAL 25 WEEK) AS p13w_start_week_end_date\n  FROM max_week_end_date_cte m\n),\ncampus_first_active_week_cte AS (\n  SELECT\n    campus_id,\n    MIN(week_end_date) AS first_active_week_end_date\n  FROM data_867\n  WHERE relmora_total_mg > 0\n  GROUP BY campus_id\n),\nnew_business_counts_cte AS (\n  SELECT\n    w.p13w_start_week_end_date,\n    w.p13w_end_week_end_date,\n    w.r13w_start_week_end_date,\n    w.r13w_end_week_end_date,\n    COUNT(DISTINCT CASE\n      WHEN c.first_active_week_end_date BETWEEN w.r13w_start_week_end_date AND w.r13w_end_week_end_date\n      THEN c.campus_id\n    END) AS new_business_accounts_r13w,\n    COUNT(DISTINCT CASE\n      WHEN c.first_active_week_end_date BETWEEN w.p13w_start_week_end_date AND w.p13w_end_week_end_date\n      THEN c.campus_id\n    END) AS new_business_accounts_p13w\n  FROM rolling_windows_cte w\n  CROSS JOIN campus_first_active_week_cte c\n  GROUP BY\n    w.p13w_start_week_end_date,\n    w.p13w_end_week_end_date,\n    w.r13w_start_week_end_date,\n    w.r13w_end_week_end_date\n),\ngrowth_calc_cte AS (\n  SELECT\n    p13w_start_week_end_date,\n    p13w_end_week_end_date,\n    new_business_accounts_p13w,\n    r13w_start_week_end_date,\n    r13w_end_week_end_date,\n    new_business_accounts_r13w,\n    CONCAT(\n      ROUND(\n        CASE\n          WHEN new_business_accounts_p13w = 0 AND new_business_accounts_r13w > 0 THEN 100\n          WHEN new_business_accounts_p13w = 0 AND new_business_accounts_r13w = 0 THEN 0\n          ELSE ((new_business_accounts_r13w - new_business_accounts_p13w) / NULLIF(new_business_accounts_p13w, 0)) * 100\n        END,\n        0\n      ),\n      '%'\n    ) AS growth_new_business_r13w_vs_p13w_pct\n  FROM new_business_counts_cte\n)\nSELECT\n  p13w_start_week_end_date,\n  p13w_end_week_end_date,\n  new_business_accounts_p13w,\n  r13w_start_week_end_date,\n  r13w_end_week_end_date,\n  new_business_accounts_r13w,\n  growth_new_business_r13w_vs_p13w_pct\nFROM growth_calc_cte;",
+      "human_verdict": "SUCCESS",
+      "embedding text": "Intent: Assess performance in adding new campus (child) businesses by counting newly active campus_ids in the most recent 13 weeks versus the prior 13 weeks, including absolute counts and growth percent, using only accounts with relmora activity (relmora_total_mg > 0).\nUser Question: How are we doing in terms of adding new businesses?"
+    },
+    "2026-03-17T09:17:45.151364+00:00Z": {
+      "run_id": "2026-03-17T09:17:45.151364+00:00Z",
+      "question": "How does new account addition look like across regions?",
+      "query_decomposition": {
+        "intent_summary": "Show new campus account additions across campus regions over the most recent 52 weeks of available data, where a new account is defined as a campus_id whose first observed week_end_date with relmora_total_mg > 0 occurs within the window.",
+        "tables": [
+          "data_867"
+        ],
+        "filters": [
+          {
+            "column": "week_end_date",
+            "operator": ">=",
+            "value": "derived:rolling_window_52_weeks_from_max_week_end_date"
+          },
+          {
+            "column": "relmora_total_mg",
+            "operator": ">",
+            "value": 0
+          }
+        ],
+        "aggregations": [
+          {
+            "metric_name": "new_accounts_52w",
+            "function": "COUNT",
+            "column": "campus_id",
+            "group_level": "campus_region"
+          }
+        ],
+        "subqueries": [
+          {
+            "name": "max_week_end_date_cte",
+            "purpose": "Identify the most recent week_end_date available in the dataset to anchor the rolling 52-week window",
+            "logic": "Compute MAX(week_end_date) from data_867"
+          },
+          {
+            "name": "first_positive_week_by_campus_cte",
+            "purpose": "Determine the first week_end_date each campus_id has positive ordering to enable identification of new accounts",
+            "logic": "From data_867 considering only rows where relmora_total_mg > 0, compute MIN(week_end_date) as first_positive_week_end_date for each campus_id; also retain the campus_region associated to that first_positive_week_end_date (if multiple rows exist on that date, select a single deterministic campus_region by taking MIN(campus_region))"
+          },
+          {
+            "name": "new_accounts_in_window_cte",
+            "purpose": "Filter to campuses whose first positive week falls within the most recent 52 weeks and prepare rows for regional counting",
+            "logic": "Filter first_positive_week_by_campus_cte where first_positive_week_end_date is between derived:rolling_window_52_weeks_from_max_week_end_date and max_week_end_date; output campus_id and campus_region"
+          }
+        ],
+        "group_by": [
+          "campus_region"
+        ],
+        "order_by": [
+          {
+            "column": "new_accounts_52w",
+            "direction": "DESC"
+          },
+          {
+            "column": "campus_region",
+            "direction": "ASC"
+          }
+        ],
+        "limit": null,
+        "final_output": {
+          "columns": [
+            "campus_region",
+            "new_accounts_52w"
+          ],
+          "row_granularity": "per_group"
+        },
+        "validation_rules": [
+          "Use only data_867 for this analysis",
+          "Default time window to the most recent 52 weeks when user does not specify a period",
+          "Determine the rolling 52-week window relative to MAX(week_end_date); do not use system date",
+          "New accounts must be defined at the campus entity level (campus_id) and based only on records where relmora_total_mg > 0",
+          "A campus_id is counted as new in the window only if its first observed week_end_date with relmora_total_mg > 0 falls within the rolling 52-week window",
+          "Do not roll campus entities up to parent entities for this request; keep campus-level definition for new accounts and then summarize by campus_region",
+          "Ensure each campus_id contributes at most 1 count to exactly one campus_region (the region associated with its first positive week_end_date; resolve ties deterministically)"
+        ]
+      },
+      "final_sql": "WITH\nmax_week_end_date_cte AS (\n  SELECT MAX(week_end_date) AS max_week_end_date\n  FROM data_867\n),\nfirst_positive_week_by_campus_cte AS (\n  SELECT\n    d.campus_id,\n    MIN(d.week_end_date) AS first_positive_week_end_date,\n    MIN(CASE WHEN d.week_end_date = fp.first_positive_week_end_date THEN d.campus_region END) AS campus_region\n  FROM data_867 d\n  JOIN (\n    SELECT\n      campus_id,\n      MIN(week_end_date) AS first_positive_week_end_date\n    FROM data_867\n    WHERE relmora_total_mg > 0\n    GROUP BY campus_id\n  ) fp\n    ON fp.campus_id = d.campus_id\n  WHERE d.relmora_total_mg > 0\n  GROUP BY d.campus_id\n),\nnew_accounts_in_window_cte AS (\n  SELECT\n    f.campus_id,\n    f.campus_region\n  FROM first_positive_week_by_campus_cte f\n  CROSS JOIN max_week_end_date_cte m\n  WHERE f.first_positive_week_end_date BETWEEN DATE_SUB(m.max_week_end_date, INTERVAL 51 WEEK) AND m.max_week_end_date\n)\nSELECT\n  n.campus_region,\n  COUNT(n.campus_id) AS new_accounts_52w\nFROM new_accounts_in_window_cte n\nGROUP BY n.campus_region\nORDER BY new_accounts_52w DESC, n.campus_region ASC;",
+      "human_verdict": "SUCCESS",
+      "embedding text": "Intent: Show new campus account additions across campus regions over the most recent 52 weeks of available data, where a new account is defined as a campus_id whose first observed week_end_date with relmora_total_mg > 0 occurs within the window.\nUser Question: How does new account addition look like across regions?"
+    },
+    "2026-03-17T09:18:51.743072+00:00Z": {
+      "run_id": "2026-03-17T09:18:51.743072+00:00Z",
+      "question": "How does new account addition look like by tier type?",
+      "query_decomposition": {
+        "intent_summary": "Show count of new campus accounts added in the most recent 52 weeks, segmented by campus tier type, considering an account 'new' if it has relmora shipments (>0 mg) in the period and none prior to the period.",
+        "tables": [
+          "data_867"
+        ],
+        "filters": [
+          {
+            "column": "week_end_date",
+            "operator": ">=",
+            "value": "derived:rolling_window_52_weeks_from_max_week_end_date"
+          },
+          {
+            "column": "relmora_total_mg",
+            "operator": ">",
+            "value": 0
+          }
+        ],
+        "aggregations": [
+          {
+            "metric_name": "new_accounts_52w",
+            "function": "COUNT",
+            "column": "campus_id",
+            "group_level": "campus_tier"
+          }
+        ],
+        "subqueries": [
+          {
+            "name": "max_week_end_date_cte",
+            "purpose": "Identify the most recent week_end_date available in the dataset to anchor the rolling 52-week window.",
+            "logic": "Compute MAX(week_end_date) from data_867."
+          },
+          {
+            "name": "current_52w_activity_cte",
+            "purpose": "Identify campus accounts active in the most recent 52 weeks (activity defined as relmora_total_mg > 0) and capture their tier for grouping.",
+            "logic": "Filter data_867 to week_end_date within the last 52 weeks relative to max_week_end_date and relmora_total_mg > 0; return distinct campus_id and campus_tier."
+          },
+          {
+            "name": "prior_activity_cte",
+            "purpose": "Identify campus accounts with any prior activity before the 52-week window (activity defined as relmora_total_mg > 0) to exclude them from 'new' accounts.",
+            "logic": "From data_867, filter to week_end_date earlier than the start of the rolling 52-week window and relmora_total_mg > 0; return distinct campus_id."
+          },
+          {
+            "name": "new_accounts_cte",
+            "purpose": "Derive the set of new campus accounts in the last 52 weeks and associate each with a tier type.",
+            "logic": "Take current_52w_activity_cte and anti-join/left-exclude campus_id values found in prior_activity_cte; keep campus_id and campus_tier for aggregation."
+          }
+        ],
+        "group_by": [
+          "campus_tier"
+        ],
+        "order_by": [
+          {
+            "column": "new_accounts_52w",
+            "direction": "DESC"
+          }
+        ],
+        "limit": null,
+        "final_output": {
+          "columns": [
+            "campus_tier",
+            "new_accounts_52w"
+          ],
+          "row_granularity": "per_group"
+        },
+        "validation_rules": [
+          "Use only data_867 for this request.",
+          "Default time window to the most recent 52 weeks because the user did not specify a period.",
+          "Determine the rolling 52-week window relative to MAX(week_end_date) from data_867; do not use system date.",
+          "Define account activity using only rows where relmora_total_mg > 0.",
+          "A 'new account' must have activity (relmora_total_mg > 0) in the current 52-week window and no activity (relmora_total_mg > 0) before the window.",
+          "Return results at the campus entity level and group by campus_tier (tier type).",
+          "Do not roll up to parent level."
+        ]
+      },
+      "final_sql": "WITH\nmax_week_end_date_cte AS (\n  SELECT MAX(week_end_date) AS max_week_end_date\n  FROM data_867\n),\nwindow_cte AS (\n  SELECT\n    DATE_SUB(max_week_end_date, INTERVAL 52 WEEK) AS window_start_date,\n    max_week_end_date AS window_end_date\n  FROM max_week_end_date_cte\n),\ncurrent_52w_activity_cte AS (\n  SELECT DISTINCT\n    d.campus_id,\n    d.campus_tier\n  FROM data_867 d\n  CROSS JOIN window_cte w\n  WHERE d.week_end_date >= w.window_start_date\n    AND d.week_end_date <= w.window_end_date\n    AND d.relmora_total_mg > 0\n),\nprior_activity_cte AS (\n  SELECT DISTINCT\n    d.campus_id\n  FROM data_867 d\n  CROSS JOIN window_cte w\n  WHERE d.week_end_date < w.window_start_date\n    AND d.relmora_total_mg > 0\n),\nnew_accounts_cte AS (\n  SELECT\n    c.campus_id,\n    c.campus_tier\n  FROM current_52w_activity_cte c\n  LEFT JOIN prior_activity_cte p\n    ON p.campus_id = c.campus_id\n  WHERE p.campus_id IS NULL\n)\nSELECT\n  na.campus_tier,\n  COUNT(na.campus_id) AS new_accounts_52w\nFROM new_accounts_cte na\nGROUP BY\n  na.campus_tier\nORDER BY\n  new_accounts_52w DESC;",
+      "human_verdict": "SUCCESS",
+      "embedding text": "Intent: Show count of new campus accounts added in the most recent 52 weeks, segmented by campus tier type, considering an account 'new' if it has relmora shipments (>0 mg) in the period and none prior to the period.\nUser Question: How does new account addition look like by tier type?"
+    },
+    "2026-03-16T09:31:25.501790+00:00Z": {
+      "run_id": "2026-03-16T09:31:25.501790+00:00Z",
+      "question": "How is the sales performance in the recent quarter?",
+      "query_decomposition": {
+        "intent_summary": "Assess relmora sales performance for the most recent calendar quarter (the quarter containing the maximum week_end_date) by reporting the quarter's total sales and the percent growth versus the immediately preceding comparable quarter, using weekly-average normalization if either quarter is incomplete.",
+        "tables": [
+          "data_867"
+        ],
+        "filters": [],
+        "aggregations": [
+          {
+            "metric_name": "quarterly_sales_recent_quarter",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "quarterly_sales_prior_quarter",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "weekly_sales_avg_recent_quarter",
+            "function": "AVG",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "weekly_sales_avg_prior_quarter",
+            "function": "AVG",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          }
+        ],
+        "subqueries": [
+          {
+            "name": "max_week_end_date_cte",
+            "purpose": "Identify the most recent week_end_date in the dataset to anchor the 'recent quarter' definition.",
+            "logic": "Compute MAX(week_end_date) from data_867; call the result max_week_end_date."
+          },
+          {
+            "name": "recent_quarter_calendar_bounds_cte",
+            "purpose": "Derive the calendar start and end date of the quarter that contains max_week_end_date (recent quarter), using calendar quarter boundaries.",
+            "logic": "Using max_week_end_date, compute recent_quarter_start_date as the first day of that calendar quarter and recent_quarter_end_date as the last day of that calendar quarter; also derive the corresponding quarter_year label from the row(s) having week_end_date = max_week_end_date."
+          },
+          {
+            "name": "prior_quarter_calendar_bounds_cte",
+            "purpose": "Derive the calendar start and end date of the quarter immediately preceding the recent quarter (prior quarter), using calendar quarter boundaries.",
+            "logic": "Set prior_quarter_end_date = recent_quarter_start_date - 1 day; set prior_quarter_start_date as the first day of the calendar quarter that contains prior_quarter_end_date."
+          },
+          {
+            "name": "quarter_completeness_flags_cte",
+            "purpose": "Determine whether the recent and prior quarters are complete based on max_week_end_date relative to each quarter's calendar end date.",
+            "logic": "recent_quarter_complete = (max_week_end_date >= recent_quarter_end_date). prior_quarter_complete = (max_week_end_date >= prior_quarter_end_date)."
+          },
+          {
+            "name": "weekly_inclusion_recent_quarter_cte",
+            "purpose": "When normalization is required, determine which week_end_date values belong to the recent quarter using the ≥3-day overlap rule.",
+            "logic": "For each distinct week_end_date, define week_start = week_end_date - 6 days and week_end = week_end_date. Compute overlap days between [week_start, week_end] and [recent_quarter_start_date, recent_quarter_end_date]. Include the week if overlap_days >= 3. Count included weeks as recent_quarter_weeks_included."
+          },
+          {
+            "name": "weekly_inclusion_prior_quarter_cte",
+            "purpose": "When normalization is required, determine which week_end_date values belong to the prior quarter using the ≥3-day overlap rule.",
+            "logic": "For each distinct week_end_date, define week_start = week_end_date - 6 days and week_end = week_end_date. Compute overlap days between [week_start, week_end] and [prior_quarter_start_date, prior_quarter_end_date]. Include the week if overlap_days >= 3. Count included weeks as prior_quarter_weeks_included."
+          },
+          {
+            "name": "normalized_or_total_quarter_sales_cte",
+            "purpose": "Compute the comparable-period sales basis (total quarterly sales if both quarters complete; otherwise weekly average sales for both quarters), ensuring both periods use the same basis.",
+            "logic": "If recent_quarter_complete AND prior_quarter_complete: recent_basis_sales = SUM(relmora_total_mg) filtered to recent quarter (using quarter_year matching recent quarter label); prior_basis_sales = SUM(relmora_total_mg) filtered to prior quarter (using quarter_year matching prior quarter label derived via calendar bounds). If NOT (both complete): recent_basis_sales = (SUM(relmora_total_mg) for records with week_end_date in included recent-quarter weeks) / recent_quarter_weeks_included; prior_basis_sales = (SUM(relmora_total_mg) for records with week_end_date in included prior-quarter weeks) / prior_quarter_weeks_included. Convert basis sales to integers (no decimals)."
+          },
+          {
+            "name": "growth_calculation_cte",
+            "purpose": "Compute percent growth of recent quarter vs prior quarter on the chosen comparable basis, with required edge-case handling.",
+            "logic": "growth_percent = if prior_basis_sales = 0 and recent_basis_sales > 0 then 100 else if prior_basis_sales = 0 and recent_basis_sales = 0 then 0 else ((recent_basis_sales - prior_basis_sales) / prior_basis_sales) * 100. Round/convert to integer and append '%' in final labeling."
+          }
+        ],
+        "group_by": [],
+        "order_by": [],
+        "limit": null,
+        "final_output": {
+          "columns": [
+            "quarterly_sales_recent_quarter",
+            "quarterly_sales_prior_quarter",
+            "growth_recent_quarter_vs_prior_quarter_%",
+            "basis_used (total_quarterly_sales_or_weekly_average)",
+            "recent_quarter_complete_flag",
+            "prior_quarter_complete_flag"
+          ],
+          "row_granularity": "single_row"
+        },
+        "validation_rules": [
+          "Use data_867 as the only source table for sales performance.",
+          "Use relmora_total_mg (not relmora_total_sls) because the question is about relmora sales performance without market share/competitor context.",
+          "Determine the anchor date using MAX(week_end_date); do not use system date and do not use MAX(quarter_year) or MAX(month_year).",
+          "Define recent quarter as the calendar quarter containing max_week_end_date; define prior quarter as the immediately preceding calendar quarter using calendar boundaries.",
+          "Determine quarter completeness using max_week_end_date >= quarter_end_date for each quarter.",
+          "If both quarters are complete, aggregate totals at the quarter level using quarter_year; do not apply week inclusion logic in this case.",
+          "If at least one quarter is incomplete, compute weekly averages for BOTH quarters using the ≥3-day week overlap inclusion rule and divide by included-week count; never compare total vs weekly average.",
+          "All growth metrics must be expressed as an integer percentage and include a '%' symbol in the output label/value.",
+          "Always accompany any growth metric with the corresponding absolute sales values for both recent and prior periods.",
+          "All computations related to growth and weekly averages must be converted to integers (no decimals) before reporting results."
+        ]
+      },
+      "final_sql": "WITH\nmax_week_end_date_cte AS (\n  SELECT MAX(week_end_date) AS max_week_end_date\n  FROM data_867\n),\nrecent_quarter_calendar_bounds_cte AS (\n  SELECT\n    m.max_week_end_date,\n    MAKEDATE(YEAR(m.max_week_end_date), 1) + INTERVAL (QUARTER(m.max_week_end_date) - 1) QUARTER AS recent_quarter_start_date,\n    (MAKEDATE(YEAR(m.max_week_end_date), 1) + INTERVAL QUARTER(m.max_week_end_date) QUARTER) - INTERVAL 1 DAY AS recent_quarter_end_date,\n    (\n      SELECT d.quarter_year\n      FROM data_867 d\n      WHERE d.week_end_date = m.max_week_end_date\n      LIMIT 1\n    ) AS recent_quarter_year_label\n  FROM max_week_end_date_cte m\n),\nprior_quarter_calendar_bounds_cte AS (\n  SELECT\n    r.max_week_end_date,\n    r.recent_quarter_start_date,\n    r.recent_quarter_end_date,\n    r.recent_quarter_year_label,\n    (r.recent_quarter_start_date - INTERVAL 1 DAY) AS prior_quarter_end_date,\n    MAKEDATE(YEAR(r.recent_quarter_start_date - INTERVAL 1 DAY), 1)\n      + INTERVAL (QUARTER(r.recent_quarter_start_date - INTERVAL 1 DAY) - 1) QUARTER AS prior_quarter_start_date\n  FROM recent_quarter_calendar_bounds_cte r\n),\nquarter_completeness_flags_cte AS (\n  SELECT\n    p.*,\n    CASE WHEN p.max_week_end_date >= p.recent_quarter_end_date THEN 1 ELSE 0 END AS recent_quarter_complete_flag,\n    CASE WHEN p.max_week_end_date >= p.prior_quarter_end_date THEN 1 ELSE 0 END AS prior_quarter_complete_flag\n  FROM prior_quarter_calendar_bounds_cte p\n),\nweekly_inclusion_recent_quarter_cte AS (\n  SELECT\n    w.week_end_date,\n    CASE\n      WHEN GREATEST(\n             0,\n             DATEDIFF(\n               LEAST(w.week_end_date, q.recent_quarter_end_date),\n               GREATEST(DATE_SUB(w.week_end_date, INTERVAL 6 DAY), q.recent_quarter_start_date)\n             ) + 1\n           ) >= 3 THEN 1 ELSE 0\n    END AS included_flag\n  FROM (SELECT DISTINCT week_end_date FROM data_867) w\n  CROSS JOIN quarter_completeness_flags_cte q\n),\nweekly_inclusion_prior_quarter_cte AS (\n  SELECT\n    w.week_end_date,\n    CASE\n      WHEN GREATEST(\n             0,\n             DATEDIFF(\n               LEAST(w.week_end_date, q.prior_quarter_end_date),\n               GREATEST(DATE_SUB(w.week_end_date, INTERVAL 6 DAY), q.prior_quarter_start_date)\n             ) + 1\n           ) >= 3 THEN 1 ELSE 0\n    END AS included_flag\n  FROM (SELECT DISTINCT week_end_date FROM data_867) w\n  CROSS JOIN quarter_completeness_flags_cte q\n),\nnormalized_or_total_quarter_sales_cte AS (\n  SELECT\n    q.recent_quarter_complete_flag,\n    q.prior_quarter_complete_flag,\n    CASE\n      WHEN q.recent_quarter_complete_flag = 1 AND q.prior_quarter_complete_flag = 1 THEN 'total_quarterly_sales'\n      ELSE 'weekly_average'\n    END AS basis_used,\n    CAST(\n      CASE\n        WHEN q.recent_quarter_complete_flag = 1 AND q.prior_quarter_complete_flag = 1 THEN\n          (\n            SELECT COALESCE(SUM(d.relmora_total_mg), 0)\n            FROM data_867 d\n            WHERE d.quarter_year = q.recent_quarter_year_label\n          )\n        ELSE\n          (\n            (\n              SELECT COALESCE(SUM(d.relmora_total_mg), 0)\n              FROM data_867 d\n              JOIN weekly_inclusion_recent_quarter_cte wi\n                ON wi.week_end_date = d.week_end_date\n              WHERE wi.included_flag = 1\n            ) / NULLIF(\n              (\n                SELECT COUNT(*)\n                FROM weekly_inclusion_recent_quarter_cte wi\n                WHERE wi.included_flag = 1\n              ),\n              0\n            )\n          )\n      END AS SIGNED\n    ) AS recent_basis_sales,\n    CAST(\n      CASE\n        WHEN q.recent_quarter_complete_flag = 1 AND q.prior_quarter_complete_flag = 1 THEN\n          (\n            SELECT COALESCE(SUM(d.relmora_total_mg), 0)\n            FROM data_867 d\n            WHERE d.quarter_year = CONCAT('Q', QUARTER(q.prior_quarter_end_date), '-', DATE_FORMAT(q.prior_quarter_end_date, '%y'))\n          )\n        ELSE\n          (\n            (\n              SELECT COALESCE(SUM(d.relmora_total_mg), 0)\n              FROM data_867 d\n              JOIN weekly_inclusion_prior_quarter_cte wi\n                ON wi.week_end_date = d.week_end_date\n              WHERE wi.included_flag = 1\n            ) / NULLIF(\n              (\n                SELECT COUNT(*)\n                FROM weekly_inclusion_prior_quarter_cte wi\n                WHERE wi.included_flag = 1\n              ),\n              0\n            )\n          )\n      END AS SIGNED\n    ) AS prior_basis_sales\n  FROM quarter_completeness_flags_cte q\n),\ngrowth_calculation_cte AS (\n  SELECT\n    n.recent_quarter_complete_flag,\n    n.prior_quarter_complete_flag,\n    n.basis_used,\n    n.recent_basis_sales,\n    n.prior_basis_sales,\n    CONCAT(\n      CAST(\n        CASE\n          WHEN n.prior_basis_sales = 0 AND n.recent_basis_sales > 0 THEN 100\n          WHEN n.prior_basis_sales = 0 AND n.recent_basis_sales = 0 THEN 0\n          ELSE CAST(ROUND(((n.recent_basis_sales - n.prior_basis_sales) / NULLIF(n.prior_basis_sales, 0)) * 100, 0) AS SIGNED)\n        END AS SIGNED\n      ),\n      '%'\n    ) AS growth_recent_quarter_vs_prior_quarter_pct\n  FROM normalized_or_total_quarter_sales_cte n\n)\nSELECT\n  g.recent_basis_sales AS quarterly_sales_recent_quarter,\n  g.prior_basis_sales AS quarterly_sales_prior_quarter,\n  g.growth_recent_quarter_vs_prior_quarter_pct AS `growth_recent_quarter_vs_prior_quarter_%`,\n  g.basis_used AS `basis_used (total_quarterly_sales_or_weekly_average)`,\n  g.recent_quarter_complete_flag AS recent_quarter_complete_flag,\n  g.prior_quarter_complete_flag AS prior_quarter_complete_flag\nFROM growth_calculation_cte g;",
+      "human_verdict": "SUCCESS",
+      "embedding text": "Intent: Assess relmora sales performance for the most recent calendar quarter (the quarter containing the maximum week_end_date) by reporting the quarter's total sales and the percent growth versus the immediately preceding comparable quarter, using weekly-average normalization if either quarter is incomplete.\nUser Question: How is the sales performance in the recent quarter?"
+    },
+    "2026-03-16T14:56:23.124020+00:00Z": {
+      "run_id": "2026-03-16T14:56:23.124020+00:00Z",
+      "question": "What is the sales performance in the recent month?",
+      "query_decomposition": {
+        "intent_summary": "Report national relmora sales performance for the most recent calendar month (the month containing the maximum week_end_date), including the month sales volume and the month-over-month growth versus the immediately prior calendar month, using weekly-average normalization if either month is incomplete.",
+        "tables": [
+          "data_867"
+        ],
+        "filters": [
+          {
+            "column": "week_end_date",
+            "operator": "between",
+            "value": "derived:comparison_periods_recent_month_and_prior_month_based_on_max_week_end_date_with_calendar_boundaries_and_completeness_rules"
+          }
+        ],
+        "aggregations": [
+          {
+            "metric_name": "sales_recent_month",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "sales_prior_month",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "weekly_sales_recent_month",
+            "function": "AVG",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "weekly_sales_prior_month",
+            "function": "AVG",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          }
+        ],
+        "subqueries": [
+          {
+            "name": "max_week_end_date_cte",
+            "purpose": "Identify the most recent available week_end_date in data_867 to anchor 'recent month' determination.",
+            "logic": "Compute MAX(week_end_date) from data_867."
+          },
+          {
+            "name": "recent_month_boundaries_cte",
+            "purpose": "Derive calendar month start and month end for the month that contains max_week_end_date.",
+            "logic": "Using max_week_end_date, derive recent_month_start = first day of that month; recent_month_end = last day of that month (calendar logic, not dataset min/max)."
+          },
+          {
+            "name": "prior_month_boundaries_cte",
+            "purpose": "Derive calendar month start and month end for the month immediately preceding the recent month.",
+            "logic": "prior_month_end = day before recent_month_start; prior_month_start = first day of prior_month_end's month; prior_month_end = last day of that month (calendar logic)."
+          },
+          {
+            "name": "period_completeness_cte",
+            "purpose": "Determine whether recent month and prior month are complete for comparison basis selection.",
+            "logic": "recent_month_complete = (max_week_end_date >= recent_month_end). prior_month_complete = (max_week_end_date >= prior_month_end)."
+          },
+          {
+            "name": "week_inclusion_cte",
+            "purpose": "When normalization is required (at least one month incomplete), determine which week_end_date weeks belong to each month using the >=3-day overlap rule.",
+            "logic": "For each week_end_date define week_window = [week_end_date - 6 days, week_end_date]. For each month period [start,end], include the week if overlap_days(week_window, period) >= 3. Count included weeks per period and retain the list of included week_end_date values per period."
+          },
+          {
+            "name": "sales_aggregation_cte",
+            "purpose": "Compute either total-month sales (if both months complete) or weekly-average sales (if either month incomplete) for both months, and compute MoM growth with required edge-case handling and integer conversion.",
+            "logic": "If both months complete: compute SUM(relmora_total_mg) for recent month and prior month using month_year anchoring aligned to those calendar months (no week inclusion logic). If either month incomplete: compute total sales within included weeks per month (SUM of relmora_total_mg over included week_end_date sets), compute weekly_average_sales = total_sales / number_of_included_weeks for each month. Growth% = ((current - prior) / prior) * 100; if prior=0 and current>0 then growth%=100. Convert all sales and weekly-average sales and any intermediate values used for growth to integers (no decimals) before final reporting; append '%' to growth label/value."
+          }
+        ],
+        "group_by": [],
+        "order_by": [],
+        "limit": null,
+        "final_output": {
+          "columns": [
+            "sales_recent_month",
+            "sales_prior_month",
+            "growth_recent_month_vs_prior_month%",
+            "comparison_basis",
+            "recent_month_included_week_end_dates",
+            "prior_month_included_week_end_dates"
+          ],
+          "row_granularity": "single_row"
+        },
+        "validation_rules": [
+          "Use only data_867 and use relmora_total_mg (not relmora_total_sls) because the question is about relmora sales performance without market share/competitor context.",
+          "Determine the anchor date using MAX(week_end_date); do not use system date; do not use MAX(month_year) or MAX(quarter_year).",
+          "Define month start/end using calendar logic (first/last day of month); dataset dates must not define calendar boundaries.",
+          "Recent month is the calendar month that contains max_week_end_date; prior month is the immediately preceding calendar month.",
+          "Assess completeness: a month is complete only if max_week_end_date >= that month’s calendar month-end date.",
+          "If both months are complete, compare total-month sales vs total-month sales and aggregate at month level using month_year (anchored to the identified calendar months); do not apply week inclusion logic.",
+          "If at least one month is incomplete, normalize BOTH months to weekly averages using the same inclusion method; never compare total sales for one month to weekly average for the other.",
+          "When normalization is required, include a week in a month only if at least 3 days of the Saturday–Friday week window fall within the target month.",
+          "When weekly averages are used, output must include the week_end_date values of the weeks included for each month.",
+          "Whenever performance is requested, include growth (percentage change vs previous comparable period) and always accompany the growth% with absolute sales values for both periods.",
+          "All growth metrics must be expressed as percentages with '%' appended; if prior period sales is 0 and current > 0, set growth to 100%.",
+          "All computations related to growth, decline, and weekly averages must be converted to integers (no decimals) before reporting results.",
+          "Default to national (no campus grouping) for 'sales performance' since the user did not request campus breakdown and rule indicates by default give national sales without grouping by campus_id or campus_account_name."
+        ]
+      },
+      "final_sql": "WITH\nmax_week_end_date_cte AS (\n  SELECT MAX(week_end_date) AS max_week_end_date\n  FROM data_867\n),\nrecent_month_boundaries_cte AS (\n  SELECT\n    max_week_end_date,\n    DATE_SUB(max_week_end_date, INTERVAL (DAYOFMONTH(max_week_end_date) - 1) DAY) AS recent_month_start,\n    LAST_DAY(max_week_end_date) AS recent_month_end\n  FROM max_week_end_date_cte\n),\nprior_month_boundaries_cte AS (\n  SELECT\n    r.max_week_end_date,\n    r.recent_month_start,\n    r.recent_month_end,\n    DATE_SUB(r.recent_month_start, INTERVAL 1 MONTH) AS prior_month_start,\n    LAST_DAY(DATE_SUB(r.recent_month_start, INTERVAL 1 MONTH)) AS prior_month_end\n  FROM recent_month_boundaries_cte r\n),\nperiod_completeness_cte AS (\n  SELECT\n    p.*,\n    CASE WHEN p.max_week_end_date >= p.recent_month_end THEN 1 ELSE 0 END AS recent_month_complete,\n    CASE WHEN p.max_week_end_date >= p.prior_month_end THEN 1 ELSE 0 END AS prior_month_complete,\n    CASE\n      WHEN (p.max_week_end_date >= p.recent_month_end) AND (p.max_week_end_date >= p.prior_month_end) THEN 0\n      ELSE 1\n    END AS normalization_required\n  FROM prior_month_boundaries_cte p\n),\nweek_list_cte AS (\n  SELECT DISTINCT d.week_end_date\n  FROM data_867 d\n  JOIN period_completeness_cte pc\n    ON d.week_end_date BETWEEN DATE_SUB(pc.prior_month_start, INTERVAL 6 DAY) AND pc.recent_month_end\n),\nweek_inclusion_cte AS (\n  SELECT\n    wl.week_end_date,\n    pc.recent_month_start,\n    pc.recent_month_end,\n    pc.prior_month_start,\n    pc.prior_month_end,\n    pc.normalization_required,\n    GREATEST(\n      0,\n      DATEDIFF(\n        LEAST(wl.week_end_date, pc.recent_month_end),\n        GREATEST(DATE_SUB(wl.week_end_date, INTERVAL 6 DAY), pc.recent_month_start)\n      ) + 1\n    ) AS overlap_days_recent_month,\n    GREATEST(\n      0,\n      DATEDIFF(\n        LEAST(wl.week_end_date, pc.prior_month_end),\n        GREATEST(DATE_SUB(wl.week_end_date, INTERVAL 6 DAY), pc.prior_month_start)\n      ) + 1\n    ) AS overlap_days_prior_month\n  FROM week_list_cte wl\n  CROSS JOIN period_completeness_cte pc\n),\nincluded_weeks_cte AS (\n  SELECT\n    w.week_end_date,\n    w.normalization_required,\n    CASE WHEN w.normalization_required = 1 AND w.overlap_days_recent_month >= 3 THEN 1 ELSE 0 END AS include_recent_week,\n    CASE WHEN w.normalization_required = 1 AND w.overlap_days_prior_month >= 3 THEN 1 ELSE 0 END AS include_prior_week\n  FROM week_inclusion_cte w\n),\nincluded_week_strings_cte AS (\n  SELECT\n    GROUP_CONCAT(CASE WHEN include_recent_week = 1 THEN DATE_FORMAT(week_end_date, '%Y-%m-%d') END ORDER BY week_end_date SEPARATOR ',') AS recent_month_included_week_end_dates,\n    GROUP_CONCAT(CASE WHEN include_prior_week = 1 THEN DATE_FORMAT(week_end_date, '%Y-%m-%d') END ORDER BY week_end_date SEPARATOR ',') AS prior_month_included_week_end_dates,\n    SUM(include_recent_week) AS recent_included_weeks,\n    SUM(include_prior_week) AS prior_included_weeks\n  FROM included_weeks_cte\n),\nmonth_year_cte AS (\n  SELECT\n    DATE_FORMAT(pc.recent_month_start, '%y-%b') AS recent_month_year,\n    DATE_FORMAT(pc.prior_month_start, '%y-%b') AS prior_month_year\n  FROM period_completeness_cte pc\n),\ncomplete_month_sales_cte AS (\n  SELECT\n    CAST(SUM(CASE WHEN d.month_year = my.recent_month_year THEN d.relmora_total_mg ELSE 0 END) AS SIGNED) AS sales_recent_month_total,\n    CAST(SUM(CASE WHEN d.month_year = my.prior_month_year THEN d.relmora_total_mg ELSE 0 END) AS SIGNED) AS sales_prior_month_total\n  FROM data_867 d\n  CROSS JOIN month_year_cte my\n  WHERE d.month_year IN (my.recent_month_year, my.prior_month_year)\n),\nincomplete_month_sales_cte AS (\n  SELECT\n    CAST(SUM(CASE WHEN iw.include_recent_week = 1 THEN d.relmora_total_mg ELSE 0 END) AS SIGNED) AS sales_recent_month_included_weeks,\n    CAST(SUM(CASE WHEN iw.include_prior_week = 1 THEN d.relmora_total_mg ELSE 0 END) AS SIGNED) AS sales_prior_month_included_weeks\n  FROM data_867 d\n  JOIN included_weeks_cte iw\n    ON d.week_end_date = iw.week_end_date\n  JOIN period_completeness_cte pc\n    ON 1=1\n  WHERE d.week_end_date BETWEEN DATE_SUB(pc.prior_month_start, INTERVAL 6 DAY) AND pc.recent_month_end\n),\nsales_aggregation_cte AS (\n  SELECT\n    pc.normalization_required,\n    CASE WHEN pc.normalization_required = 0 THEN 'total_month_sales' ELSE 'weekly_average_sales' END AS comparison_basis,\n\n    CASE\n      WHEN pc.normalization_required = 0 THEN cms.sales_recent_month_total\n      ELSE CAST(ROUND(ims.sales_recent_month_included_weeks / NULLIF(iws.recent_included_weeks, 0), 0) AS SIGNED)\n    END AS sales_recent_month,\n\n    CASE\n      WHEN pc.normalization_required = 0 THEN cms.sales_prior_month_total\n      ELSE CAST(ROUND(ims.sales_prior_month_included_weeks / NULLIF(iws.prior_included_weeks, 0), 0) AS SIGNED)\n    END AS sales_prior_month,\n\n    iws.recent_month_included_week_end_dates,\n    iws.prior_month_included_week_end_dates\n  FROM period_completeness_cte pc\n  CROSS JOIN included_week_strings_cte iws\n  CROSS JOIN complete_month_sales_cte cms\n  CROSS JOIN incomplete_month_sales_cte ims\n)\nSELECT\n  s.sales_recent_month AS sales_recent_month,\n  s.sales_prior_month AS sales_prior_month,\n  CONCAT(\n    CAST(\n      CASE\n        WHEN s.sales_prior_month = 0 AND s.sales_recent_month > 0 THEN 100\n        WHEN s.sales_prior_month = 0 AND s.sales_recent_month = 0 THEN 0\n        ELSE CAST(ROUND(((s.sales_recent_month - s.sales_prior_month) / NULLIF(s.sales_prior_month, 0)) * 100, 0) AS SIGNED)\n      END AS SIGNED\n    ),\n    '%'\n  ) AS `growth_recent_month_vs_prior_month%`,\n  s.comparison_basis AS comparison_basis,\n  s.recent_month_included_week_end_dates AS recent_month_included_week_end_dates,\n  s.prior_month_included_week_end_dates AS prior_month_included_week_end_dates\nFROM sales_aggregation_cte s;",
+      "human_verdict": "SUCCESS",
+      "embedding text": "Intent: Report national relmora sales performance for the most recent calendar month (the month containing the maximum week_end_date), including the month sales volume and the month-over-month growth versus the immediately prior calendar month, using weekly-average normalization if either month is incomplete.\nUser Question: What is the sales performance in the recent month?"
+    },
+    "2026-03-12T06:31:32.309347+00:00Z": {
+      "run_id": "2026-03-12T06:31:32.309347+00:00Z",
+      "question": "Is short-term sales performance consistent across regions?",
+      "query_decomposition": {
+        "intent_summary": "Assess whether short-term relmora sales performance is consistent across regions by comparing recent 13-week sales and growth (R13W vs P13W) for each campus_region, and benchmarking each region's growth versus national growth.",
+        "tables": [
+          "data_867"
+        ],
+        "filters": [
+          {
+            "column": "week_end_date",
+            "operator": ">=",
+            "value": "derived:rolling_window_26_weeks_from_max_week_end_date"
+          },
+          {
+            "column": "week_end_date",
+            "operator": "<=",
+            "value": "derived:max_week_end_date"
+          }
+        ],
+        "aggregations": [
+          {
+            "metric_name": "sales_r13w",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "campus_region"
+          },
+          {
+            "metric_name": "sales_p13w",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "campus_region"
+          },
+          {
+            "metric_name": "sales_r13w_nation",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "sales_p13w_nation",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          }
+        ],
+        "subqueries": [
+          {
+            "name": "max_week_end_date_cte",
+            "purpose": "Identify the most recent week_end_date available for rolling-window calculations.",
+            "logic": "Compute MAX(week_end_date) from data_867."
+          },
+          {
+            "name": "window_bounds_cte",
+            "purpose": "Derive start/end boundaries for R13W and P13W windows anchored to the maximum week_end_date.",
+            "logic": "Using max_week_end_date: define R13W as the 13 weeks ending on max_week_end_date; define P13W as the 13 weeks immediately preceding R13W (total lookback 26 weeks)."
+          },
+          {
+            "name": "region_window_sales_cte",
+            "purpose": "Compute region-level sales for R13W and P13W.",
+            "logic": "Aggregate SUM(relmora_total_mg) by campus_region separately for rows in R13W and rows in P13W; output both sales_r13w and sales_p13w per campus_region."
+          },
+          {
+            "name": "nation_window_sales_cte",
+            "purpose": "Compute national sales for R13W and P13W to support national growth benchmarking.",
+            "logic": "Aggregate SUM(relmora_total_mg) across all rows (no group) separately for R13W and P13W; output sales_r13w_nation and sales_p13w_nation."
+          },
+          {
+            "name": "growth_and_consistency_cte",
+            "purpose": "Compute growth metrics and classify each region as better or worse than the nation for short-term performance consistency assessment.",
+            "logic": "For each campus_region: compute growth_r13w_pct = ((sales_r13w - sales_p13w) / sales_p13w) * 100 with special handling when sales_p13w=0 and sales_r13w>0 => 100%. Compute nation_growth_r13w_pct analogously from sales_r13w_nation and sales_p13w_nation. Add a comparison flag better_or_worse_vs_nation based on whether region growth_r13w_pct is greater than nation_growth_r13w_pct (Better) else Worse (tie can be Equal). Ensure all growth outputs are integer percentages and include the corresponding absolute sales volumes."
+          }
+        ],
+        "group_by": [
+          "campus_region"
+        ],
+        "order_by": [
+          {
+            "column": "sales_r13w",
+            "direction": "DESC"
+          }
+        ],
+        "limit": null,
+        "final_output": {
+          "columns": [
+            "campus_region",
+            "sales_r13w",
+            "sales_p13w",
+            "growth_r13w_pct%",
+            "sales_r13w_nation",
+            "sales_p13w_nation",
+            "nation_growth_r13w_pct%",
+            "better_or_worse_vs_nation"
+          ],
+          "row_granularity": "per_group"
+        },
+        "validation_rules": [
+          "Use data_867 as the anchor table for sales performance.",
+          "Default time window for unspecified growth timeframe is R13W vs P13W.",
+          "Determine the latest time period using MAX(week_end_date); do not use system date and do not use MAX(quarter_year) or MAX(month_year).",
+          "Rolling windows must be computed relative to MAX(week_end_date).",
+          "Use week_end_date (not date) for weekly rolling-window calculations in data_867.",
+          "Use relmora_total_mg (not relmora_total_sls) because the question is about relmora sales performance without market-share/competitor context.",
+          "Always include growth when the user asks about performance; growth must be expressed as a percentage with a '%' suffix and accompanied by absolute sales volumes for both periods.",
+          "If prior period sales (P13W) is 0 and current period sales (R13W) is greater than 0, set growth to 100%.",
+          "All growth calculations must be converted to integers (no decimals) before reporting.",
+          "Whenever growth is calculated for geographies, also calculate national growth and include a better_or_worse_vs_nation indicator.",
+          "Do not compare weekly averages of the nation with region values; this request uses equal-length windows (13 weeks vs 13 weeks), so no weekly normalization is required."
+        ]
+      },
+      "final_sql": "WITH\nmax_week_end_date_cte AS (\n  SELECT MAX(week_end_date) AS max_week_end_date\n  FROM data_867\n),\nwindow_bounds_cte AS (\n  SELECT\n    max_week_end_date AS r13w_end,\n    DATE_SUB(max_week_end_date, INTERVAL 12 WEEK) AS r13w_start,\n    DATE_SUB(max_week_end_date, INTERVAL 13 WEEK) AS p13w_end,\n    DATE_SUB(max_week_end_date, INTERVAL 25 WEEK) AS p13w_start,\n    DATE_SUB(max_week_end_date, INTERVAL 25 WEEK) AS lookback_26w_start\n  FROM max_week_end_date_cte\n),\nregion_window_sales_cte AS (\n  SELECT\n    d.campus_region,\n    SUM(CASE WHEN d.week_end_date BETWEEN w.r13w_start AND w.r13w_end THEN d.relmora_total_mg ELSE 0 END) AS sales_r13w,\n    SUM(CASE WHEN d.week_end_date BETWEEN w.p13w_start AND w.p13w_end THEN d.relmora_total_mg ELSE 0 END) AS sales_p13w\n  FROM data_867 d\n  CROSS JOIN window_bounds_cte w\n  WHERE d.week_end_date >= w.lookback_26w_start\n    AND d.week_end_date <= w.r13w_end\n  GROUP BY d.campus_region\n),\nnation_window_sales_cte AS (\n  SELECT\n    SUM(CASE WHEN d.week_end_date BETWEEN w.r13w_start AND w.r13w_end THEN d.relmora_total_mg ELSE 0 END) AS sales_r13w_nation,\n    SUM(CASE WHEN d.week_end_date BETWEEN w.p13w_start AND w.p13w_end THEN d.relmora_total_mg ELSE 0 END) AS sales_p13w_nation\n  FROM data_867 d\n  CROSS JOIN window_bounds_cte w\n  WHERE d.week_end_date >= w.lookback_26w_start\n    AND d.week_end_date <= w.r13w_end\n),\ngrowth_and_consistency_cte AS (\n  SELECT\n    r.campus_region,\n    r.sales_r13w,\n    r.sales_p13w,\n    CONCAT(\n      CAST(\n        CASE\n          WHEN r.sales_p13w = 0 AND r.sales_r13w > 0 THEN 100\n          WHEN r.sales_p13w = 0 AND r.sales_r13w = 0 THEN 0\n          ELSE ROUND(((r.sales_r13w - r.sales_p13w) / NULLIF(r.sales_p13w, 0)) * 100, 0)\n        END AS SIGNED\n      ),\n      '%'\n    ) AS `growth_r13w_pct%`,\n    n.sales_r13w_nation,\n    n.sales_p13w_nation,\n    CONCAT(\n      CAST(\n        CASE\n          WHEN n.sales_p13w_nation = 0 AND n.sales_r13w_nation > 0 THEN 100\n          WHEN n.sales_p13w_nation = 0 AND n.sales_r13w_nation = 0 THEN 0\n          ELSE ROUND(((n.sales_r13w_nation - n.sales_p13w_nation) / NULLIF(n.sales_p13w_nation, 0)) * 100, 0)\n        END AS SIGNED\n      ),\n      '%'\n    ) AS `nation_growth_r13w_pct%`,\n    CASE\n      WHEN\n        (\n          CASE\n            WHEN r.sales_p13w = 0 AND r.sales_r13w > 0 THEN 100\n            WHEN r.sales_p13w = 0 AND r.sales_r13w = 0 THEN 0\n            ELSE ROUND(((r.sales_r13w - r.sales_p13w) / NULLIF(r.sales_p13w, 0)) * 100, 0)\n          END\n        ) >\n        (\n          CASE\n            WHEN n.sales_p13w_nation = 0 AND n.sales_r13w_nation > 0 THEN 100\n            WHEN n.sales_p13w_nation = 0 AND n.sales_r13w_nation = 0 THEN 0\n            ELSE ROUND(((n.sales_r13w_nation - n.sales_p13w_nation) / NULLIF(n.sales_p13w_nation, 0)) * 100, 0)\n          END\n        )\n      THEN 'Better'\n      WHEN\n        (\n          CASE\n            WHEN r.sales_p13w = 0 AND r.sales_r13w > 0 THEN 100\n            WHEN r.sales_p13w = 0 AND r.sales_r13w = 0 THEN 0\n            ELSE ROUND(((r.sales_r13w - r.sales_p13w) / NULLIF(r.sales_p13w, 0)) * 100, 0)\n          END\n        ) <\n        (\n          CASE\n            WHEN n.sales_p13w_nation = 0 AND n.sales_r13w_nation > 0 THEN 100\n            WHEN n.sales_p13w_nation = 0 AND n.sales_r13w_nation = 0 THEN 0\n            ELSE ROUND(((n.sales_r13w_nation - n.sales_p13w_nation) / NULLIF(n.sales_p13w_nation, 0)) * 100, 0)\n          END\n        )\n      THEN 'Worse'\n      ELSE 'Equal'\n    END AS better_or_worse_vs_nation\n  FROM region_window_sales_cte r\n  CROSS JOIN nation_window_sales_cte n\n)\nSELECT\n  campus_region,\n  sales_r13w,\n  sales_p13w,\n  `growth_r13w_pct%`,\n  sales_r13w_nation,\n  sales_p13w_nation,\n  `nation_growth_r13w_pct%`,\n  better_or_worse_vs_nation\nFROM growth_and_consistency_cte\nORDER BY sales_r13w DESC;",
+      "human_verdict": "SUCCESS",
+      "embedding text": "Intent: Assess whether short-term relmora sales performance is consistent across regions by comparing recent 13-week sales and growth (R13W vs P13W) for each campus_region, and benchmarking each region's growth versus national growth.\nUser Question: Is short-term sales performance consistent across regions?"
+    },
+    "2026-03-10T07:04:35.724001+00:00Z": {
+      "run_id": "2026-03-10T07:04:35.724001+00:00Z",
+      "question": "Are we seeing strong short-term sales momentum?",
+      "query_decomposition": {
+        "intent_summary": "Assess short-term sales momentum for relmora by comparing recent 4-week performance vs the prior 4-week period using weekly-average normalization and reporting both absolute volume and growth percent.",
+        "tables": [
+          "data_867"
+        ],
+        "filters": [
+          {
+            "column": "week_end_date",
+            "operator": ">=",
+            "value": "derived:rolling_window_8_weeks_from_max_week_end_date"
+          },
+          {
+            "column": "week_end_date",
+            "operator": "<=",
+            "value": "derived:max_week_end_date"
+          }
+        ],
+        "aggregations": [
+          {
+            "metric_name": "weekly_sales_mg_r4w",
+            "function": "AVG",
+            "column": "relmora_total_mg",
+            "group_level": "week_end_date"
+          },
+          {
+            "metric_name": "weekly_sales_mg_p4w",
+            "function": "AVG",
+            "column": "relmora_total_mg",
+            "group_level": "week_end_date"
+          },
+          {
+            "metric_name": "sales_mg_r4w",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "sales_mg_p4w",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          }
+        ],
+        "subqueries": [
+          {
+            "name": "max_week_end_date_cte",
+            "purpose": "Identify the most recent complete week in the dataset for rolling weekly windows.",
+            "logic": "Compute MAX(week_end_date) as max_week_end_date from data_867."
+          },
+          {
+            "name": "weekly_totals_cte",
+            "purpose": "Aggregate shipments to weekly totals to enable 4-week vs prior-4-week comparisons on equal-length periods and weekly-average calculations.",
+            "logic": "Group data_867 by week_end_date and compute SUM(relmora_total_mg) as weekly_sales_mg for all weeks between (max_week_end_date - 7 weeks) and max_week_end_date inclusive."
+          },
+          {
+            "name": "window_splits_cte",
+            "purpose": "Split weekly totals into Recent 4 Weeks (R4W) and Prior 4 Weeks (P4W) relative to max_week_end_date.",
+            "logic": "Using weekly_totals_cte: define R4W as week_end_date in (max_week_end_date - 3 weeks) through max_week_end_date; define P4W as week_end_date in (max_week_end_date - 7 weeks) through (max_week_end_date - 4 weeks)."
+          },
+          {
+            "name": "momentum_metrics_cte",
+            "purpose": "Compute absolute and percentage momentum metrics with required integer rounding and zero-baseline growth handling.",
+            "logic": "From window_splits_cte compute: sales_mg_r4w = SUM(weekly_sales_mg) over R4W; sales_mg_p4w = SUM(weekly_sales_mg) over P4W; weekly_avg_sales_mg_r4w = (sales_mg_r4w / 4); weekly_avg_sales_mg_p4w = (sales_mg_p4w / 4); momentum_growth_r4w_vs_p4w = CASE WHEN weekly_avg_sales_mg_p4w = 0 AND weekly_avg_sales_mg_r4w > 0 THEN 100 WHEN weekly_avg_sales_mg_p4w = 0 AND weekly_avg_sales_mg_r4w = 0 THEN 0 ELSE ((weekly_avg_sales_mg_r4w - weekly_avg_sales_mg_p4w) / weekly_avg_sales_mg_p4w) * 100 END. Convert all computed metrics (weekly avgs and sales) to integers (no decimals) before output; append '%' to growth metric label/value."
+          }
+        ],
+        "group_by": [],
+        "order_by": [],
+        "limit": null,
+        "final_output": {
+          "columns": [
+            "max_week_end_date",
+            "sales_mg_r4w",
+            "sales_mg_p4w",
+            "weekly_avg_sales_mg_r4w",
+            "weekly_avg_sales_mg_p4w",
+            "momentum_growth_r4w_vs_p4w_%"
+          ],
+          "row_granularity": "single_row"
+        },
+        "validation_rules": [
+          "Use data_867 only (relmora-focused); use relmora_total_mg as the sales volume metric.",
+          "Short-term momentum must be evaluated on a 4-week window; compare R4W vs P4W.",
+          "Rolling windows must be calculated relative to MAX(week_end_date); do not use system date.",
+          "Use week_end_date for all weekly calculations.",
+          "Because periods are equal length (4 weeks vs 4 weeks), weekly-average normalization is still required and must be used as the basis for growth calculation.",
+          "All computations related to growth and weekly averages must be converted to integers (no decimals) before reporting.",
+          "All growth metrics must be expressed in percentage (%) format and must include '%' in the output label/value.",
+          "If prior-period weekly average is 0 and current-period weekly average > 0, growth must be reported as 100%.",
+          "Always accompany the growth metric with the corresponding absolute volume values for both periods (sales_mg_r4w and sales_mg_p4w).",
+          "Default entity level is campus; do not aggregate to parent (no parent_id grouping).",
+          "If any weeks are missing within the 8-week window, compute weekly totals only for available week_end_date values, but still divide by 4 for weekly averages to preserve deterministic 4-week window definitions."
+        ]
+      },
+      "final_sql": "WITH max_week_end_date_cte AS (\n  SELECT MAX(week_end_date) AS max_week_end_date\n  FROM data_867\n),\nweekly_totals_cte AS (\n  SELECT\n    d.week_end_date,\n    SUM(d.relmora_total_mg) AS weekly_sales_mg\n  FROM data_867 d\n  CROSS JOIN max_week_end_date_cte m\n  WHERE d.week_end_date >= DATE_SUB(m.max_week_end_date, INTERVAL 7 WEEK)\n    AND d.week_end_date <= m.max_week_end_date\n  GROUP BY d.week_end_date\n),\nwindow_splits_cte AS (\n  SELECT\n    w.week_end_date,\n    w.weekly_sales_mg,\n    CASE\n      WHEN w.week_end_date >= DATE_SUB(m.max_week_end_date, INTERVAL 3 WEEK)\n       AND w.week_end_date <= m.max_week_end_date\n      THEN 'R4W'\n      WHEN w.week_end_date >= DATE_SUB(m.max_week_end_date, INTERVAL 7 WEEK)\n       AND w.week_end_date <= DATE_SUB(m.max_week_end_date, INTERVAL 4 WEEK)\n      THEN 'P4W'\n      ELSE NULL\n    END AS window_bucket\n  FROM weekly_totals_cte w\n  CROSS JOIN max_week_end_date_cte m\n),\nmomentum_metrics_cte AS (\n  SELECT\n    MAX(m.max_week_end_date) AS max_week_end_date,\n    CAST(ROUND(SUM(CASE WHEN ws.window_bucket = 'R4W' THEN ws.weekly_sales_mg ELSE 0 END), 0) AS SIGNED) AS sales_mg_r4w,\n    CAST(ROUND(SUM(CASE WHEN ws.window_bucket = 'P4W' THEN ws.weekly_sales_mg ELSE 0 END), 0) AS SIGNED) AS sales_mg_p4w,\n    CAST(ROUND(SUM(CASE WHEN ws.window_bucket = 'R4W' THEN ws.weekly_sales_mg ELSE 0 END) / 4, 0) AS SIGNED) AS weekly_avg_sales_mg_r4w,\n    CAST(ROUND(SUM(CASE WHEN ws.window_bucket = 'P4W' THEN ws.weekly_sales_mg ELSE 0 END) / 4, 0) AS SIGNED) AS weekly_avg_sales_mg_p4w\n  FROM window_splits_cte ws\n  CROSS JOIN max_week_end_date_cte m\n)\nSELECT\n  mm.max_week_end_date,\n  mm.sales_mg_r4w,\n  mm.sales_mg_p4w,\n  mm.weekly_avg_sales_mg_r4w,\n  mm.weekly_avg_sales_mg_p4w,\n  CONCAT(\n    CAST(\n      ROUND(\n        CASE\n          WHEN mm.weekly_avg_sales_mg_p4w = 0 AND mm.weekly_avg_sales_mg_r4w > 0 THEN 100\n          WHEN mm.weekly_avg_sales_mg_p4w = 0 AND mm.weekly_avg_sales_mg_r4w = 0 THEN 0\n          ELSE ((mm.weekly_avg_sales_mg_r4w - mm.weekly_avg_sales_mg_p4w) / NULLIF(mm.weekly_avg_sales_mg_p4w, 0)) * 100\n        END,\n        0\n      ) AS SIGNED\n    ),\n    '%'\n  ) AS `momentum_growth_r4w_vs_p4w_%`\nFROM momentum_metrics_cte mm;",
+      "human_verdict": "SUCCESS",
+      "embedding text": "Intent: Assess short-term sales momentum for relmora by comparing recent 4-week performance vs the prior 4-week period using weekly-average normalization and reporting both absolute volume and growth percent.\nUser Question: Are we seeing strong short-term sales momentum?"
+    },
+    "2026-03-09T18:23:30.123014+00:00Z": {
+      "run_id": "2026-03-09T18:23:30.123014+00:00Z",
+      "question": "Is national performance improving?",
+      "query_decomposition": {
+        "intent_summary": "Assess whether national relmora performance is improving by comparing recent 13 weeks vs prior 13 weeks (weekly-average normalized) and include absolute volumes for both periods plus growth percent.",
+        "tables": [
+          "data_867"
+        ],
+        "filters": [
+          {
+            "column": "week_end_date",
+            "operator": ">=",
+            "value": "derived:rolling_window_26_weeks_from_max_week_end_date"
+          }
+        ],
+        "aggregations": [
+          {
+            "metric_name": "sales_r13w_weekly_avg",
+            "function": "AVG",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "sales_p13w_weekly_avg",
+            "function": "AVG",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "sales_r13w",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "sales_p13w",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          }
+        ],
+        "subqueries": [
+          {
+            "name": "max_week_end_date_cte",
+            "purpose": "Identify the most recent week_end_date to anchor rolling windows.",
+            "logic": "Compute MAX(week_end_date) from data_867."
+          },
+          {
+            "name": "windowed_weeks_cte",
+            "purpose": "Create two comparable 13-week periods (R13W and P13W) relative to the max week_end_date.",
+            "logic": "Using max_week_end_date, assign each row to a period label: R13W if week_end_date is within the most recent 13 weeks (inclusive), P13W if within the 13 weeks immediately preceding R13W; exclude all other rows. Aggregate by week_end_date first to produce weekly sums of relmora_total_mg, then compute period-level SUM and weekly AVG from those weekly sums."
+          },
+          {
+            "name": "growth_calc_cte",
+            "purpose": "Compute growth percent between R13W and P13W using weekly averages and enforce edge-case rules.",
+            "logic": "Compute growth_percent = ((sales_r13w_weekly_avg - sales_p13w_weekly_avg) / sales_p13w_weekly_avg) * 100; if sales_p13w_weekly_avg = 0 and sales_r13w_weekly_avg > 0 then growth_percent = 100; if both are 0 then growth_percent = 0. Convert growth_percent and all sales metrics to integers (no decimals) before output and append '%' to the growth metric label/value formatting."
+          }
+        ],
+        "group_by": [],
+        "order_by": [],
+        "limit": null,
+        "final_output": {
+          "columns": [
+            "sales_r13w",
+            "sales_p13w",
+            "sales_r13w_weekly_avg",
+            "sales_p13w_weekly_avg",
+            "growth_r13w_vs_p13w%"
+          ],
+          "row_granularity": "single_row"
+        },
+        "validation_rules": [
+          "Nation must be computed as a full-table rollup with no campus/parent grouping (national-level metrics included in output).",
+          "Because a growth comparison is requested without a timeframe, default to R13W vs P13W.",
+          "Use week_end_date (not date) for weekly time logic and rolling-window boundaries.",
+          "Rolling windows must be anchored to MAX(week_end_date) derived from the table; do not use system date.",
+          "Ensure the two compared periods are equal length (13 weeks each); if period lengths differ due to missing weeks, compute growth using weekly averages derived from weekly aggregated totals.",
+          "Use relmora_total_mg (not total_sls) since the question is focused solely on relmora and not market share/competitors.",
+          "Always accompany growth with corresponding absolute volume values for both periods.",
+          "All growth metrics must be expressed as a percentage with a '%' sign.",
+          "If previous period value is 0 and current period value is > 0, report growth as 100%.",
+          "All computations related to growth, decline, and weekly averages must be converted to integers (no decimals) before reporting results."
+        ]
+      },
+      "final_sql": "WITH max_week_end_date_cte AS (\n  SELECT MAX(week_end_date) AS max_week_end_date\n  FROM data_867\n),\nwindowed_weeks_cte AS (\n  SELECT\n    ww.period_label,\n    SUM(ww.weekly_mg) AS period_sales,\n    AVG(ww.weekly_mg) AS period_weekly_avg\n  FROM (\n    SELECT\n      d.week_end_date,\n      CASE\n        WHEN d.week_end_date BETWEEN DATE_SUB(m.max_week_end_date, INTERVAL 12 WEEK) AND m.max_week_end_date THEN 'R13W'\n        WHEN d.week_end_date BETWEEN DATE_SUB(m.max_week_end_date, INTERVAL 25 WEEK) AND DATE_SUB(m.max_week_end_date, INTERVAL 13 WEEK) THEN 'P13W'\n        ELSE NULL\n      END AS period_label,\n      SUM(d.relmora_total_mg) AS weekly_mg\n    FROM data_867 d\n    CROSS JOIN max_week_end_date_cte m\n    WHERE d.week_end_date >= DATE_SUB(m.max_week_end_date, INTERVAL 25 WEEK)\n    GROUP BY\n      d.week_end_date,\n      CASE\n        WHEN d.week_end_date BETWEEN DATE_SUB(m.max_week_end_date, INTERVAL 12 WEEK) AND m.max_week_end_date THEN 'R13W'\n        WHEN d.week_end_date BETWEEN DATE_SUB(m.max_week_end_date, INTERVAL 25 WEEK) AND DATE_SUB(m.max_week_end_date, INTERVAL 13 WEEK) THEN 'P13W'\n        ELSE NULL\n      END\n    HAVING period_label IS NOT NULL\n  ) ww\n  GROUP BY ww.period_label\n),\ngrowth_calc_cte AS (\n  SELECT\n    CAST(MAX(CASE WHEN period_label = 'R13W' THEN period_sales END) AS SIGNED) AS sales_r13w,\n    CAST(MAX(CASE WHEN period_label = 'P13W' THEN period_sales END) AS SIGNED) AS sales_p13w,\n    CAST(MAX(CASE WHEN period_label = 'R13W' THEN period_weekly_avg END) AS SIGNED) AS sales_r13w_weekly_avg,\n    CAST(MAX(CASE WHEN period_label = 'P13W' THEN period_weekly_avg END) AS SIGNED) AS sales_p13w_weekly_avg,\n    CONCAT(\n      CAST(\n        CASE\n          WHEN MAX(CASE WHEN period_label = 'P13W' THEN period_weekly_avg END) = 0\n               AND MAX(CASE WHEN period_label = 'R13W' THEN period_weekly_avg END) > 0\n            THEN 100\n          WHEN MAX(CASE WHEN period_label = 'P13W' THEN period_weekly_avg END) = 0\n               AND MAX(CASE WHEN period_label = 'R13W' THEN period_weekly_avg END) = 0\n            THEN 0\n          ELSE\n            ROUND(\n              (\n                (\n                  MAX(CASE WHEN period_label = 'R13W' THEN period_weekly_avg END)\n                  - MAX(CASE WHEN period_label = 'P13W' THEN period_weekly_avg END)\n                )\n                / NULLIF(MAX(CASE WHEN period_label = 'P13W' THEN period_weekly_avg END), 0)\n              ) * 100,\n              0\n            )\n        END AS SIGNED\n      ),\n      '%'\n    ) AS `growth_r13w_vs_p13w%`\n  FROM windowed_weeks_cte\n)\nSELECT\n  sales_r13w,\n  sales_p13w,\n  sales_r13w_weekly_avg,\n  sales_p13w_weekly_avg,\n  `growth_r13w_vs_p13w%`\nFROM growth_calc_cte;",
+      "human_verdict": "SUCCESS",
+      "embedding text": "Intent: Assess whether national relmora performance is improving by comparing recent 13 weeks vs prior 13 weeks (weekly-average normalized) and include absolute volumes for both periods plus growth percent.\nUser Question: Is national performance improving?"
+    },
+    "2026-03-09T15:33:57.722570+00:00Z": {
+      "run_id": "2026-03-09T15:33:57.722570+00:00Z",
+      "question": "how are sales trending?",
+      "query_decomposition": {
+        "intent_summary": "Show weekly trend of relmora sales volume over the most recent 52 weeks of available data at the campus level.",
+        "tables": [
+          "data_867"
+        ],
+        "filters": [
+          {
+            "column": "week_end_date",
+            "operator": ">=",
+            "value": "derived:rolling_window_52_weeks_from_max_week_end_date"
+          },
+          {
+            "column": "week_end_date",
+            "operator": "<=",
+            "value": "derived:max_week_end_date"
+          }
+        ],
+        "aggregations": [
+          {
+            "metric_name": "weekly_sales_mg",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "week_end_date"
+          }
+        ],
+        "subqueries": [
+          {
+            "name": "max_week_end_date_cte",
+            "purpose": "Identify the most recent week_end_date in the dataset to anchor the rolling 52-week window.",
+            "logic": "Compute MAX(week_end_date) from data_867."
+          },
+          {
+            "name": "rolling_52_weeks_window",
+            "purpose": "Derive the start date for the most recent 52-week window based on the maximum week_end_date.",
+            "logic": "Define window start as (max_week_end_date - 51 weeks) and window end as max_week_end_date."
+          }
+        ],
+        "group_by": [
+          "week_end_date"
+        ],
+        "order_by": [
+          {
+            "column": "week_end_date",
+            "direction": "ASC"
+          }
+        ],
+        "limit": null,
+        "final_output": {
+          "columns": [
+            "week_end_date",
+            "weekly_sales_mg"
+          ],
+          "row_granularity": "per_group"
+        },
+        "validation_rules": [
+          "Default time period to the most recent 52 weeks when not specified.",
+          "Use week_end_date for weekly trend calculations (not date).",
+          "Rolling window must be anchored to MAX(week_end_date) derived from the data; do not use system date.",
+          "Use relmora_total_mg (not total_sls) since the question is about relmora sales trending without market share/competitor context.",
+          "Keep aggregation at campus entity level by not grouping or rolling up to parent fields unless explicitly requested."
+        ]
+      },
+      "final_sql": "WITH max_week_end_date_cte AS (\n  SELECT MAX(week_end_date) AS max_week_end_date\n  FROM data_867\n),\nrolling_52_weeks_window AS (\n  SELECT\n    max_week_end_date,\n    DATE_SUB(max_week_end_date, INTERVAL 51 WEEK) AS window_start_date\n  FROM max_week_end_date_cte\n)\nSELECT\n  d.week_end_date,\n  SUM(d.relmora_total_mg) AS weekly_sales_mg\nFROM data_867 AS d\nCROSS JOIN rolling_52_weeks_window AS w\nWHERE d.week_end_date >= w.window_start_date\n  AND d.week_end_date <= w.max_week_end_date\nGROUP BY d.week_end_date\nORDER BY d.week_end_date ASC;",
+      "human_verdict": "SUCCESS",
+      "embedding text": "Intent: Show weekly trend of relmora sales volume over the most recent 52 weeks of available data at the campus level.\nUser Question: how are sales trending?"
+    },
+    "2026-03-09T15:37:53.083927+00:00Z": {
+      "run_id": "2026-03-09T15:37:53.083927+00:00Z",
+      "question": "How has our sales performance evolved over the past year?",
+      "query_decomposition": {
+        "intent_summary": "Show how relmora sales performance has changed over the most recent 52 weeks by reporting weekly total relmora sales volume and week-over-week growth percentages, aggregated at the campus level and rolled up to an overall (national) weekly trend.",
+        "tables": [
+          "data_867"
+        ],
+        "filters": [
+          {
+            "column": "week_end_date",
+            "operator": ">=",
+            "value": "derived:rolling_window_52_weeks_from_max_week_end_date"
+          },
+          {
+            "column": "week_end_date",
+            "operator": "<=",
+            "value": "derived:max_week_end_date"
+          }
+        ],
+        "aggregations": [
+          {
+            "metric_name": "weekly_sales",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "week_end_date"
+          }
+        ],
+        "subqueries": [
+          {
+            "name": "max_week_end_date_cte",
+            "purpose": "Identify the most recent week_end_date available to anchor the rolling 52-week window.",
+            "logic": "Compute MAX(week_end_date) from data_867."
+          },
+          {
+            "name": "weekly_sales_cte",
+            "purpose": "Compute total weekly sales volume for each week in the last 52 weeks.",
+            "logic": "Filter data_867 to week_end_date between (max_week_end_date - 51 weeks) and max_week_end_date, then aggregate SUM(relmora_total_mg) grouped by week_end_date."
+          },
+          {
+            "name": "weekly_wow_growth_cte",
+            "purpose": "Compute week-over-week growth (%) for the weekly sales series, with special handling when prior week is 0.",
+            "logic": "For each week_end_date in weekly_sales_cte, join to the prior week_end_date record to get prior_weekly_sales. Compute growth as: if prior_weekly_sales = 0 and weekly_sales > 0 then 100; else if prior_weekly_sales = 0 and weekly_sales = 0 then 0; else ((weekly_sales - prior_weekly_sales) / prior_weekly_sales) * 100. Convert the growth result to an integer and format with a trailing '%'. Also convert weekly_sales to integer (already INT via SUM of INT) before output."
+          }
+        ],
+        "group_by": [
+          "week_end_date"
+        ],
+        "order_by": [
+          {
+            "column": "week_end_date",
+            "direction": "ASC"
+          }
+        ],
+        "limit": null,
+        "final_output": {
+          "columns": [
+            "week_end_date",
+            "weekly_sales",
+            "weekly_sales_wow_growth%"
+          ],
+          "row_granularity": "per_group"
+        },
+        "validation_rules": [
+          "Default time period to the most recent 52 weeks of available data when not specified.",
+          "Use week_end_date for all weekly calculations and rolling weekly windows.",
+          "Derive the rolling 52-week window relative to MAX(week_end_date); do not use system date.",
+          "Use relmora_total_mg (not total_sls) because this is a relmora-only sales performance question, not market share or competitor comparison.",
+          "Aggregate at campus entity level by default; do not substitute parent entities. Summing across all campus entities produces the overall (national) trend.",
+          "All growth metrics must be expressed as integer percentages and include a trailing '%'.",
+          "Whenever a growth metric is reported, include the corresponding absolute volume (weekly_sales) for the same time grain.",
+          "For growth: if prior period value is 0 and current period value > 0, report growth as 100%.",
+          "All computations related to growth must be converted to integers (no decimals) before reporting."
+        ]
+      },
+      "final_sql": "WITH max_week_end_date_cte AS (\n  SELECT MAX(week_end_date) AS max_week_end_date\n  FROM data_867\n),\nweekly_sales_cte AS (\n  SELECT\n    d.week_end_date,\n    CAST(SUM(d.relmora_total_mg) AS SIGNED) AS weekly_sales\n  FROM data_867 d\n  CROSS JOIN max_week_end_date_cte m\n  WHERE d.week_end_date >= DATE_SUB(m.max_week_end_date, INTERVAL 51 WEEK)\n    AND d.week_end_date <= m.max_week_end_date\n  GROUP BY d.week_end_date\n),\nweekly_wow_growth_cte AS (\n  SELECT\n    cur.week_end_date,\n    cur.weekly_sales,\n    CONCAT(\n      CAST(\n        CASE\n          WHEN IFNULL(prior.weekly_sales, 0) = 0 AND cur.weekly_sales > 0 THEN 100\n          WHEN IFNULL(prior.weekly_sales, 0) = 0 AND cur.weekly_sales = 0 THEN 0\n          ELSE ((cur.weekly_sales - prior.weekly_sales) / NULLIF(prior.weekly_sales, 0)) * 100\n        END AS SIGNED\n      ),\n      '%'\n    ) AS `weekly_sales_wow_growth%`\n  FROM weekly_sales_cte cur\n  LEFT JOIN weekly_sales_cte prior\n    ON prior.week_end_date = DATE_SUB(cur.week_end_date, INTERVAL 7 DAY)\n)\nSELECT\n  week_end_date,\n  weekly_sales,\n  `weekly_sales_wow_growth%`\nFROM weekly_wow_growth_cte\nORDER BY week_end_date ASC;",
+      "human_verdict": "SUCCESS",
+      "embedding text": "Intent: Show how relmora sales performance has changed over the most recent 52 weeks by reporting weekly total relmora sales volume and week-over-week growth percentages, aggregated at the campus level and rolled up to an overall (national) weekly trend.\nUser Question: How has our sales performance evolved over the past year?"
+    },
+    "2026-03-17T10:30:14.235763+00:00Z": {
+      "run_id": "2026-03-17T10:30:14.235763+00:00Z",
+      "question": "How does new account addition look like across regions in Jan'26?",
+      "query_decomposition": {
+        "intent_summary": "Show new campus account additions by campus_region for Jan 2026, where a new account is defined as a campus_id with its first-ever positive relmora shipment (relmora_total_mg > 0) occurring during Jan 2026.",
+        "tables": [
+          "data_867"
+        ],
+        "filters": [
+          {
+            "column": "date",
+            "operator": ">=",
+            "value": "2026-01-01"
+          },
+          {
+            "column": "date",
+            "operator": "<=",
+            "value": "2026-01-31"
+          }
+        ],
+        "aggregations": [
+          {
+            "metric_name": "new_accounts_monthly_26_jan",
+            "function": "COUNT",
+            "column": "campus_id",
+            "group_level": "campus_region"
+          }
+        ],
+        "subqueries": [
+          {
+            "name": "first_positive_shipment_by_campus",
+            "purpose": "Determine the first date each campus_id ever has a positive relmora shipment to identify whether it is a new account in the requested month.",
+            "logic": "From data_867, filter to rows where relmora_total_mg > 0; group by campus_id; compute MIN(date) as first_positive_date."
+          },
+          {
+            "name": "new_accounts_in_jan_2026",
+            "purpose": "Identify campus_ids whose first_positive_date falls within Jan 2026 and assign them to regions for reporting.",
+            "logic": "Join first_positive_shipment_by_campus back to data_867 on campus_id; retain rows where first_positive_date is between 2026-01-01 and 2026-01-31 inclusive; select distinct campus_id with its campus_region (if multiple campus_region values exist for the campus_id in the month, use a deterministic rule such as MIN(campus_region))."
+          }
+        ],
+        "group_by": [
+          "campus_region"
+        ],
+        "order_by": [
+          {
+            "column": "new_accounts_monthly_26_jan",
+            "direction": "DESC"
+          },
+          {
+            "column": "campus_region",
+            "direction": "ASC"
+          }
+        ],
+        "limit": null,
+        "final_output": {
+          "columns": [
+            "campus_region",
+            "new_accounts_monthly_26_jan"
+          ],
+          "row_granularity": "per_group"
+        },
+        "validation_rules": [
+          "Use only data_867 for this request.",
+          "New account logic must consider only records where relmora_total_mg > 0.",
+          "A campus_id is counted as a new account in Jan 2026 only if its MIN(date) among rows with relmora_total_mg > 0 falls between 2026-01-01 and 2026-01-31 inclusive.",
+          "Count each campus_id at most once per region for the month (distinct campus_id).",
+          "Default to campus entity level; do not roll up to parent entities.",
+          "Do not compute sales totals or growth unless explicitly requested."
+        ]
+      },
+      "final_sql": "WITH first_positive_shipment_by_campus AS (\n  SELECT\n    campus_id,\n    MIN(date) AS first_positive_date\n  FROM data_867\n  WHERE relmora_total_mg > 0\n  GROUP BY campus_id\n),\nnew_accounts_in_jan_2026 AS (\n  SELECT\n    d.campus_id,\n    MIN(d.campus_region) AS campus_region\n  FROM data_867 d\n  INNER JOIN first_positive_shipment_by_campus f\n    ON f.campus_id = d.campus_id\n  WHERE f.first_positive_date >= '2026-01-01'\n    AND f.first_positive_date <= '2026-01-31'\n    AND d.date >= '2026-01-01'\n    AND d.date <= '2026-01-31'\n  GROUP BY d.campus_id\n)\nSELECT\n  n.campus_region,\n  COUNT(DISTINCT n.campus_id) AS new_accounts_monthly_26_jan\nFROM new_accounts_in_jan_2026 n\nGROUP BY\n  n.campus_region\nORDER BY\n  new_accounts_monthly_26_jan DESC,\n  n.campus_region ASC;",
+      "human_verdict": "SUCCESS",
+      "embedding text": "Intent: Show new campus account additions by campus_region for Jan 2026, where a new account is defined as a campus_id with its first-ever positive relmora shipment (relmora_total_mg > 0) occurring during Jan 2026.\nUser Question: How does new account addition look like across regions in Jan'26?"
+    },
+    "2026-03-16T09:33:41.392632+00:00Z": {
+      "run_id": "2026-03-16T09:33:41.392632+00:00Z",
+      "question": "Compare the growth in Q3'25 with Q4'25?",
+      "query_decomposition": {
+        "intent_summary": "Compare relmora sales growth between calendar Q3-25 and Q4-25, reporting both absolute sales and growth percentage using totals if both quarters are complete, otherwise using weekly-average normalized sales for both quarters.",
+        "tables": [
+          "data_867"
+        ],
+        "filters": [
+          {
+            "column": "quarter_year",
+            "operator": "IN",
+            "value": "Q3-25,Q4-25"
+          }
+        ],
+        "aggregations": [
+          {
+            "metric_name": "quarterly_sales_q3_25",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "quarterly_sales_q4_25",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "weekly_avg_sales_q3_25",
+            "function": "AVG",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "weekly_avg_sales_q4_25",
+            "function": "AVG",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          }
+        ],
+        "subqueries": [
+          {
+            "name": "max_week_end_date_cte",
+            "purpose": "Identify the most recent week_end_date available to determine period completeness.",
+            "logic": "Compute MAX(week_end_date) from data_867."
+          },
+          {
+            "name": "quarter_boundaries_cte",
+            "purpose": "Define calendar start and end dates for Q3-25 and Q4-25 using calendar logic, not dataset min/max.",
+            "logic": "Set Q3-25 period_start=2025-07-01 and period_end=2025-09-30; set Q4-25 period_start=2025-10-01 and period_end=2025-12-31."
+          },
+          {
+            "name": "quarter_completeness_cte",
+            "purpose": "Determine whether Q3-25 and Q4-25 are complete based on max_week_end_date compared to each quarter's calendar end date.",
+            "logic": "Mark a quarter complete if max_week_end_date >= its calendar quarter_end; otherwise incomplete."
+          },
+          {
+            "name": "normalized_week_assignment_cte",
+            "purpose": "When normalization is required (at least one quarter incomplete), assign weeks to each quarter using the ≥3-day overlap rule and compute total sales and included-week counts per quarter.",
+            "logic": "For each distinct week_end_date in data_867, define week_window=[week_end_date-6 days, week_end_date]. For each target quarter window [period_start, period_end], compute overlap_days between week_window and quarter window; include the week in that quarter if overlap_days >= 3. Then for included weeks, sum relmora_total_mg and count distinct week_end_date per quarter."
+          },
+          {
+            "name": "comparison_metrics_cte",
+            "purpose": "Compute comparable sales basis (totals vs weekly averages) for both quarters, then compute absolute difference and growth percentage from Q3-25 to Q4-25, applying special growth rule when prior is 0.",
+            "logic": "If both quarters are complete: use quarter_year-anchored SUM(relmora_total_mg) for each quarter. Else: use weekly_average_sales = total_sales_in_period / number_of_included_weeks for each quarter from normalized_week_assignment_cte. Compute sales_diff = current - prior. Compute growth_pct = CASE WHEN prior_value=0 AND current_value>0 THEN 100 WHEN prior_value=0 AND current_value=0 THEN 0 ELSE ((current-prior)/prior)*100 END. Convert growth_pct to integer and append '%' in final output. Convert sales values and sales_diff to integers."
+          }
+        ],
+        "group_by": [],
+        "order_by": [],
+        "limit": null,
+        "final_output": {
+          "columns": [
+            "basis_used_label",
+            "sales_q3_25",
+            "sales_q4_25",
+            "sales_diff_q4_minus_q3",
+            "growth_q4_vs_q3_pct"
+          ],
+          "row_granularity": "single_row"
+        },
+        "validation_rules": [
+          "Use only data_867 and the metric column relmora_total_mg (no competitor columns).",
+          "Quarters must be defined by calendar boundaries: Q3-25=2025-07-01..2025-09-30, Q4-25=2025-10-01..2025-12-31; do not derive starts/ends from dataset dates.",
+          "Determine completeness using MAX(week_end_date) from data_867 compared to each quarter's calendar end date; do not use MAX(quarter_year) since it is a string.",
+          "If both quarters are complete, aggregate totals anchored by quarter_year (no week inclusion logic).",
+          "If at least one quarter is incomplete, weekly-normalize both quarters: apply ≥3-day overlap rule to include weeks and compute weekly averages for both periods; never mix totals with weekly averages.",
+          "When normalization is used, number_of_weeks_included must be COUNT(DISTINCT week_end_date) after applying the ≥3-day rule.",
+          "All growth metrics must be expressed as an integer percentage and suffixed with '%'.",
+          "If prior period value is 0 and current period value > 0, growth must be reported as 100%. If both are 0, report 0%.",
+          "Always accompany growth with the corresponding absolute sales values for Q3-25 and Q4-25 and the absolute difference; all reported numeric values must be integers (no decimals).",
+          "Default aggregation level is campus entity level, but since no grouping is requested, compute overall national totals across all campus entities (no group_by on campus_id or parent_id)."
+        ]
+      },
+      "final_sql": "WITH\nmax_week_end_date_cte AS (\n  SELECT MAX(week_end_date) AS max_week_end_date\n  FROM data_867\n),\nquarter_boundaries_cte AS (\n  SELECT 'Q3-25' AS quarter_year, DATE('2025-07-01') AS period_start, DATE('2025-09-30') AS period_end\n  UNION ALL\n  SELECT 'Q4-25' AS quarter_year, DATE('2025-10-01') AS period_start, DATE('2025-12-31') AS period_end\n),\nquarter_completeness_cte AS (\n  SELECT\n    qb.quarter_year,\n    qb.period_start,\n    qb.period_end,\n    CASE WHEN m.max_week_end_date >= qb.period_end THEN 1 ELSE 0 END AS is_complete\n  FROM quarter_boundaries_cte qb\n  CROSS JOIN max_week_end_date_cte m\n),\ncomplete_totals_cte AS (\n  SELECT\n    d.quarter_year,\n    SUM(d.relmora_total_mg) AS total_sales\n  FROM data_867 d\n  WHERE d.quarter_year IN ('Q3-25','Q4-25')\n  GROUP BY d.quarter_year\n),\ndistinct_weeks_cte AS (\n  SELECT DISTINCT week_end_date\n  FROM data_867\n),\nnormalized_week_assignment_cte AS (\n  SELECT\n    qc.quarter_year,\n    SUM(d.relmora_total_mg) AS total_sales,\n    COUNT(DISTINCT d.week_end_date) AS included_weeks\n  FROM quarter_completeness_cte qc\n  JOIN distinct_weeks_cte w\n    ON GREATEST(DATE_SUB(w.week_end_date, INTERVAL 6 DAY), qc.period_start)\n       <= LEAST(w.week_end_date, qc.period_end)\n   AND (DATEDIFF(\n          LEAST(w.week_end_date, qc.period_end),\n          GREATEST(DATE_SUB(w.week_end_date, INTERVAL 6 DAY), qc.period_start)\n        ) + 1) >= 3\n  JOIN data_867 d\n    ON d.week_end_date = w.week_end_date\n   AND d.quarter_year IN ('Q3-25','Q4-25')\n  WHERE qc.quarter_year IN ('Q3-25','Q4-25')\n  GROUP BY qc.quarter_year\n),\ncomparison_metrics_cte AS (\n  SELECT\n    CASE\n      WHEN SUM(qc.is_complete) = 2 THEN 'total_sales'\n      ELSE 'weekly_avg_sales'\n    END AS basis_used_label,\n    CASE\n      WHEN SUM(qc.is_complete) = 2 THEN CAST(IFNULL(MAX(CASE WHEN ct.quarter_year = 'Q3-25' THEN ct.total_sales END), 0) AS SIGNED)\n      ELSE CAST(ROUND(IFNULL(MAX(CASE WHEN nw.quarter_year = 'Q3-25' THEN nw.total_sales END), 0) / NULLIF(IFNULL(MAX(CASE WHEN nw.quarter_year = 'Q3-25' THEN nw.included_weeks END), 0), 0), 0) AS SIGNED)\n    END AS sales_q3_25,\n    CASE\n      WHEN SUM(qc.is_complete) = 2 THEN CAST(IFNULL(MAX(CASE WHEN ct.quarter_year = 'Q4-25' THEN ct.total_sales END), 0) AS SIGNED)\n      ELSE CAST(ROUND(IFNULL(MAX(CASE WHEN nw.quarter_year = 'Q4-25' THEN nw.total_sales END), 0) / NULLIF(IFNULL(MAX(CASE WHEN nw.quarter_year = 'Q4-25' THEN nw.included_weeks END), 0), 0), 0) AS SIGNED)\n    END AS sales_q4_25\n  FROM quarter_completeness_cte qc\n  LEFT JOIN complete_totals_cte ct\n    ON ct.quarter_year = qc.quarter_year\n  LEFT JOIN normalized_week_assignment_cte nw\n    ON nw.quarter_year = qc.quarter_year\n  WHERE qc.quarter_year IN ('Q3-25','Q4-25')\n)\nSELECT\n  cm.basis_used_label,\n  cm.sales_q3_25,\n  cm.sales_q4_25,\n  CAST((cm.sales_q4_25 - cm.sales_q3_25) AS SIGNED) AS sales_diff_q4_minus_q3,\n  CONCAT(\n    CAST(\n      CASE\n        WHEN cm.sales_q3_25 = 0 AND cm.sales_q4_25 > 0 THEN 100\n        WHEN cm.sales_q3_25 = 0 AND cm.sales_q4_25 = 0 THEN 0\n        ELSE CAST(ROUND(((cm.sales_q4_25 - cm.sales_q3_25) / NULLIF(cm.sales_q3_25, 0)) * 100, 0) AS SIGNED)\n      END AS SIGNED\n    ),\n    '%'\n  ) AS growth_q4_vs_q3_pct\nFROM comparison_metrics_cte cm;",
+      "human_verdict": "SUCCESS",
+      "embedding text": "Intent: Compare relmora sales growth between calendar Q3-25 and Q4-25, reporting both absolute sales and growth percentage using totals if both quarters are complete, otherwise using weekly-average normalized sales for both quarters.\nUser Question: Compare the growth in Q3'25 with Q4'25?"
+    },
+    "2026-03-16T15:02:03.719972+00:00Z": {
+      "run_id": "2026-03-16T15:02:03.719972+00:00Z",
+      "question": "How is sales performance in recent 13 weeks across regions?",
+      "query_decomposition": {
+        "intent_summary": "Assess relmora sales performance for the most recent 13 weeks across campus regions, including region sales, prior 13-week sales, growth vs prior 13 weeks, national sales and growth, and an indicator of whether each region is performing higher or lower than the nation.",
+        "tables": [
+          "data_867"
+        ],
+        "filters": [
+          {
+            "column": "week_end_date",
+            "operator": "BETWEEN",
+            "value": "derived:union_of_R13W_and_P13W_from_max_week_end_date"
+          }
+        ],
+        "aggregations": [
+          {
+            "metric_name": "sales_r13w",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "campus_region"
+          },
+          {
+            "metric_name": "sales_p13w",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "campus_region"
+          },
+          {
+            "metric_name": "sales_r13w_nation",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "sales_p13w_nation",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          }
+        ],
+        "subqueries": [
+          {
+            "name": "max_week_end_date_cte",
+            "purpose": "Identify the most recent available week_end_date to anchor rolling windows",
+            "logic": "Compute MAX(week_end_date) from data_867"
+          },
+          {
+            "name": "r13w_window_cte",
+            "purpose": "Define the Recent 13 Weeks window anchored to max_week_end_date",
+            "logic": "Derive r13w_start = max_week_end_date - 12 weeks and r13w_end = max_week_end_date (inclusive), using week_end_date"
+          },
+          {
+            "name": "p13w_window_cte",
+            "purpose": "Define the Prior 13 Weeks window immediately preceding R13W",
+            "logic": "Derive p13w_end = r13w_start - 1 week and p13w_start = p13w_end - 12 weeks (inclusive), using week_end_date"
+          },
+          {
+            "name": "region_sales_cte",
+            "purpose": "Compute region-level R13W and P13W sales totals (campus-level data grouped to region)",
+            "logic": "Aggregate SUM(relmora_total_mg) by campus_region separately for R13W and P13W using conditional aggregation based on week_end_date membership in each window"
+          },
+          {
+            "name": "nation_sales_cte",
+            "purpose": "Compute national R13W and P13W sales totals for benchmarking",
+            "logic": "Aggregate SUM(relmora_total_mg) across all records separately for R13W and P13W using conditional aggregation based on week_end_date membership in each window"
+          },
+          {
+            "name": "performance_derivations",
+            "purpose": "Derive growth metrics and higher/lower-than-nation flag with required edge-case handling",
+            "logic": "For each region and for nation: growth_r13w_vs_p13w = CASE WHEN sales_p13w = 0 AND sales_r13w > 0 THEN 100 WHEN sales_p13w = 0 AND sales_r13w = 0 THEN 0 ELSE ((sales_r13w - sales_p13w) * 100) / sales_p13w END; cast/round all computed growth values and any intermediate comparison values to integers (no decimals) before output. Then compute performance_vs_nation = CASE WHEN region_growth > nation_growth THEN 'Higher' ELSE 'Lower' END (if equal, return 'Lower' deterministically). Append '%' to growth outputs."
+          }
+        ],
+        "group_by": [
+          "campus_region"
+        ],
+        "order_by": [
+          {
+            "column": "sales_r13w",
+            "direction": "DESC"
+          }
+        ],
+        "limit": null,
+        "final_output": {
+          "columns": [
+            "campus_region",
+            "sales_r13w",
+            "sales_p13w",
+            "growth_r13w_vs_p13w%",
+            "sales_r13w_nation",
+            "sales_p13w_nation",
+            "growth_r13w_vs_p13w_nation%",
+            "performance_vs_nation"
+          ],
+          "row_granularity": "per_group"
+        },
+        "validation_rules": [
+          "Use only data_867 and column relmora_total_mg for sales volume because the question is focused on relmora performance (not market share).",
+          "Determine the anchor date as MAX(week_end_date); do not use system date and do not use MAX(month_year) or MAX(quarter_year).",
+          "R13W must include exactly 13 weekly endpoints (max_week_end_date and the prior 12 week_end_date values); P13W must be the 13 weekly endpoints immediately preceding R13W.",
+          "Because R13W and P13W are equal-length rolling windows, do not normalize to weekly averages for the comparison.",
+          "Whenever performance is requested, include growth vs previous comparable period (R13W vs P13W) and accompany growth with absolute sales values.",
+          "All growth metrics must be expressed as percentages and must include a trailing '%' in the output label/value.",
+          "If prior period sales (P13W) equals 0 and current period sales (R13W) is greater than 0, growth must be reported as 100%.",
+          "All computed growth values and any required integer conversions must be output as integers with no decimals.",
+          "Compute and include national R13W and P13W sales and national growth; for each region include a deterministic Higher/Lower flag comparing region growth to national growth.",
+          "Default to campus entity level data; grouping by campus_region is allowed but must not roll up to parent entities."
+        ]
+      },
+      "final_sql": "WITH\nmax_week_end_date_cte AS (\n  SELECT MAX(week_end_date) AS max_week_end_date\n  FROM data_867\n),\nr13w_window_cte AS (\n  SELECT\n    max_week_end_date AS r13w_end,\n    DATE_SUB(max_week_end_date, INTERVAL 12 WEEK) AS r13w_start\n  FROM max_week_end_date_cte\n),\np13w_window_cte AS (\n  SELECT\n    DATE_SUB(r13w_start, INTERVAL 1 WEEK) AS p13w_end,\n    DATE_SUB(DATE_SUB(r13w_start, INTERVAL 1 WEEK), INTERVAL 12 WEEK) AS p13w_start,\n    r13w_start,\n    r13w_end\n  FROM r13w_window_cte\n),\nregion_sales_cte AS (\n  SELECT\n    d.campus_region,\n    SUM(CASE WHEN d.week_end_date BETWEEN w.r13w_start AND w.r13w_end THEN d.relmora_total_mg ELSE 0 END) AS sales_r13w,\n    SUM(CASE WHEN d.week_end_date BETWEEN w.p13w_start AND w.p13w_end THEN d.relmora_total_mg ELSE 0 END) AS sales_p13w\n  FROM data_867 d\n  CROSS JOIN p13w_window_cte w\n  WHERE d.week_end_date BETWEEN w.p13w_start AND w.r13w_end\n  GROUP BY d.campus_region\n),\nnation_sales_cte AS (\n  SELECT\n    SUM(CASE WHEN d.week_end_date BETWEEN w.r13w_start AND w.r13w_end THEN d.relmora_total_mg ELSE 0 END) AS sales_r13w_nation,\n    SUM(CASE WHEN d.week_end_date BETWEEN w.p13w_start AND w.p13w_end THEN d.relmora_total_mg ELSE 0 END) AS sales_p13w_nation\n  FROM data_867 d\n  CROSS JOIN p13w_window_cte w\n  WHERE d.week_end_date BETWEEN w.p13w_start AND w.r13w_end\n)\nSELECT\n  rs.campus_region,\n  rs.sales_r13w,\n  rs.sales_p13w,\n  CONCAT(\n    CAST(\n      CASE\n        WHEN rs.sales_p13w = 0 AND rs.sales_r13w > 0 THEN 100\n        WHEN rs.sales_p13w = 0 AND rs.sales_r13w = 0 THEN 0\n        ELSE ROUND(((rs.sales_r13w - rs.sales_p13w) * 100) / NULLIF(rs.sales_p13w, 0), 0)\n      END AS SIGNED\n    ),\n    '%'\n  ) AS `growth_r13w_vs_p13w%`,\n  ns.sales_r13w_nation,\n  ns.sales_p13w_nation,\n  CONCAT(\n    CAST(\n      CASE\n        WHEN ns.sales_p13w_nation = 0 AND ns.sales_r13w_nation > 0 THEN 100\n        WHEN ns.sales_p13w_nation = 0 AND ns.sales_r13w_nation = 0 THEN 0\n        ELSE ROUND(((ns.sales_r13w_nation - ns.sales_p13w_nation) * 100) / NULLIF(ns.sales_p13w_nation, 0), 0)\n      END AS SIGNED\n    ),\n    '%'\n  ) AS `growth_r13w_vs_p13w_nation%`,\n  CASE\n    WHEN\n      CAST(\n        CASE\n          WHEN rs.sales_p13w = 0 AND rs.sales_r13w > 0 THEN 100\n          WHEN rs.sales_p13w = 0 AND rs.sales_r13w = 0 THEN 0\n          ELSE ROUND(((rs.sales_r13w - rs.sales_p13w) * 100) / NULLIF(rs.sales_p13w, 0), 0)\n        END AS SIGNED\n      )\n      >\n      CAST(\n        CASE\n          WHEN ns.sales_p13w_nation = 0 AND ns.sales_r13w_nation > 0 THEN 100\n          WHEN ns.sales_p13w_nation = 0 AND ns.sales_r13w_nation = 0 THEN 0\n          ELSE ROUND(((ns.sales_r13w_nation - ns.sales_p13w_nation) * 100) / NULLIF(ns.sales_p13w_nation, 0), 0)\n        END AS SIGNED\n      )\n    THEN 'Higher'\n    ELSE 'Lower'\n  END AS performance_vs_nation\nFROM region_sales_cte rs\nCROSS JOIN nation_sales_cte ns\nORDER BY rs.sales_r13w DESC;",
+      "human_verdict": "SUCCESS",
+      "embedding text": "Intent: Assess relmora sales performance for the most recent 13 weeks across campus regions, including region sales, prior 13-week sales, growth vs prior 13 weeks, national sales and growth, and an indicator of whether each region is performing higher or lower than the nation.\nUser Question: How is sales performance in recent 13 weeks across regions?"
+    },
+    "2026-03-16T15:12:01.575120+00:00Z": {
+      "run_id": "2026-03-16T15:12:01.575120+00:00Z",
+      "question": "Which regions are driving quarterly performance?",
+      "query_decomposition": {
+        "intent_summary": "Identify which campus regions are driving quarterly performance by calculating current-quarter sales, prior-quarter sales, QoQ growth %, national QoQ growth %, and each region's contribution % to national current-quarter sales, using the most recent available week_end_date to define the current quarter and applying weekly-average normalization if either quarter is incomplete.",
+        "tables": [
+          "data_867"
+        ],
+        "filters": [
+          {
+            "column": "week_end_date",
+            "operator": "between",
+            "value": "derived:current_quarter_or_prior_quarter_date_window_based_on_max_week_end_date_and_calendar_quarter_boundaries"
+          }
+        ],
+        "aggregations": [
+          {
+            "metric_name": "quarterly_sales_current_qtr",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "campus_region"
+          },
+          {
+            "metric_name": "quarterly_sales_prior_qtr",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "campus_region"
+          },
+          {
+            "metric_name": "weekly_avg_quarterly_sales_current_qtr",
+            "function": "AVG",
+            "column": "relmora_total_mg",
+            "group_level": "campus_region"
+          },
+          {
+            "metric_name": "weekly_avg_quarterly_sales_prior_qtr",
+            "function": "AVG",
+            "column": "relmora_total_mg",
+            "group_level": "campus_region"
+          },
+          {
+            "metric_name": "nation_quarterly_sales_current_qtr",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "nation_quarterly_sales_prior_qtr",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "nation_weekly_avg_quarterly_sales_current_qtr",
+            "function": "AVG",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "nation_weekly_avg_quarterly_sales_prior_qtr",
+            "function": "AVG",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          }
+        ],
+        "subqueries": [
+          {
+            "name": "max_week_end_date_cte",
+            "purpose": "Identify the most recent available week_end_date to anchor the definition of the current quarter.",
+            "logic": "Compute MAX(week_end_date) from data_867."
+          },
+          {
+            "name": "quarter_calendar_cte",
+            "purpose": "Derive calendar quarter start/end dates for the current quarter (containing max_week_end_date) and the immediately prior quarter, and determine completeness for each quarter.",
+            "logic": "Using max_week_end_date, derive current_quarter_start (first day of the calendar quarter containing max_week_end_date) and current_quarter_end (last day of that calendar quarter). Derive prior_quarter_start and prior_quarter_end as the immediately preceding calendar quarter boundaries. Determine completeness: current_complete = (max_week_end_date >= current_quarter_end) and prior_complete = (max_week_end_date >= prior_quarter_end)."
+          },
+          {
+            "name": "week_inclusion_cte",
+            "purpose": "When normalization is required (at least one quarter incomplete), determine which weeks (week_end_date) belong to each quarter using the >=3-day overlap rule, and provide the included week_end_date lists and week counts.",
+            "logic": "For each week_end_date, define week_window = [week_end_date - 6 days, week_end_date]. For each target quarter window [quarter_start, quarter_end], compute overlap_days between week_window and target quarter. Include the week in that quarter only if overlap_days >= 3. Produce per quarter: list of included week_end_date values and count of included weeks. Apply only if (NOT current_complete) OR (NOT prior_complete)."
+          },
+          {
+            "name": "region_quarter_metrics_cte",
+            "purpose": "Compute region-level current and prior quarter sales using totals when both quarters are complete; otherwise compute weekly averages using the included weeks and ensure consistent comparison basis.",
+            "logic": "Group by campus_region. If current_complete AND prior_complete: compute SUM(relmora_total_mg) for records in current quarter and prior quarter (anchored to calendar quarters; no week inclusion logic). Else: restrict records to included weeks for each quarter from week_inclusion_cte; compute total_sales_per_quarter and weekly_avg_sales_per_quarter = total_sales_per_quarter / included_week_count for both quarters."
+          },
+          {
+            "name": "nation_quarter_metrics_cte",
+            "purpose": "Compute national current and prior quarter metrics using the same basis as region calculations (totals if both complete; otherwise weekly averages), to enable nation growth and Higher/Lower comparison.",
+            "logic": "At national level (no grouping). Use the same completeness decision and, if normalization is needed, the same included week logic and week counts as used for region calculations to compute either total quarter sales or weekly average quarter sales for current and prior quarters."
+          },
+          {
+            "name": "final_calc_cte",
+            "purpose": "Compute QoQ growth %, contribution % to national current-quarter sales, and Higher/Lower vs nation growth; enforce 0-to-positive growth rule and integer rounding requirements.",
+            "logic": "For each region: select the comparison_basis_sales_current and comparison_basis_sales_prior (either totals or weekly avgs, consistently). Compute region_growth_pct = CASE WHEN prior=0 AND current>0 THEN 100% ELSE ((current-prior)/prior)*100% END. Compute nation_growth_pct similarly using nation values. Compute performance_vs_nation = 'Higher' if region_growth_pct > nation_growth_pct else 'Lower' (tie treated as 'Lower' unless explicitly specified otherwise). Compute region_contribution_pct = (region_current_total_sales / nation_current_total_sales)*100%, where totals refer to current-quarter totals (not weekly averages) unless normalization is required; if normalization is required, use comparison-basis current values consistently for both numerator and denominator. Convert all growth and percentage computations to integers (no decimals) prior to output and append '%'."
+          }
+        ],
+        "group_by": [
+          "campus_region"
+        ],
+        "order_by": [
+          {
+            "column": "region_contribution_pct",
+            "direction": "DESC"
+          }
+        ],
+        "limit": null,
+        "final_output": {
+          "columns": [
+            "campus_region",
+            "quarter_year_current",
+            "quarter_year_prior",
+            "quarterly_sales_current_qtr",
+            "quarterly_sales_prior_qtr",
+            "growth_qoq_pct",
+            "region_contribution_pct",
+            "nation_growth_qoq_pct",
+            "performance_vs_nation",
+            "normalization_basis",
+            "included_week_end_dates_current_qtr",
+            "included_week_end_dates_prior_qtr"
+          ],
+          "row_granularity": "per_group"
+        },
+        "validation_rules": [
+          "Use data_867 and metric column relmora_total_mg (no competitor/market share columns).",
+          "Determine max_week_end_date using MAX(week_end_date); do not use system date; do not use MAX(quarter_year) because it is a string.",
+          "Define current quarter as the calendar quarter containing max_week_end_date; define prior quarter as the immediately preceding calendar quarter using calendar boundaries (not dataset min/max).",
+          "Determine completeness for each quarter using max_week_end_date >= quarter_end_date.",
+          "If both quarters are complete, aggregate quarter totals anchored to quarter_year without applying week inclusion logic.",
+          "If at least one quarter is incomplete, normalize BOTH quarters to weekly averages; apply the >=3-day overlap rule to determine included weeks; include output lists of week_end_date values used for each quarter's weekly average.",
+          "Never compare totals for one quarter to weekly averages for the other quarter; the comparison basis must match for both quarters.",
+          "Whenever performance is requested, include QoQ growth % and also include the corresponding absolute sales values for current and prior quarters.",
+          "All growth and percentage computations (growth_qoq_pct, region_contribution_pct, nation_growth_qoq_pct) must be integer values (no decimals) and include a '%' suffix.",
+          "If prior period value is 0 and current period value > 0, set growth to 100%.",
+          "Compute and include national QoQ growth and a Higher/Lower indicator for each region vs nation growth.",
+          "Default aggregation level for entities is campus-level; grouping by campus_region is allowed and should not roll up to parent entities."
+        ]
+      },
+      "final_sql": "WITH\nmax_week_end_date_cte AS (\n  SELECT MAX(week_end_date) AS max_week_end_date\n  FROM data_867\n),\nquarter_calendar_cte AS (\n  SELECT\n    m.max_week_end_date,\n    DATE_SUB(DATE_ADD(DATE(m.max_week_end_date), INTERVAL (1 - QUARTER(m.max_week_end_date)) QUARTER), INTERVAL (DAYOFMONTH(DATE_ADD(DATE(m.max_week_end_date), INTERVAL (1 - QUARTER(m.max_week_end_date)) QUARTER)) - 1) DAY) AS current_quarter_start,\n    LAST_DAY(DATE_ADD(DATE_SUB(DATE_ADD(DATE(m.max_week_end_date), INTERVAL (1 - QUARTER(m.max_week_end_date)) QUARTER), INTERVAL (DAYOFMONTH(DATE_ADD(DATE(m.max_week_end_date), INTERVAL (1 - QUARTER(m.max_week_end_date)) QUARTER)) - 1) DAY), INTERVAL 2 MONTH)) AS current_quarter_end,\n    DATE_SUB(\n      DATE_SUB(DATE_ADD(DATE(m.max_week_end_date), INTERVAL (1 - QUARTER(m.max_week_end_date)) QUARTER), INTERVAL (DAYOFMONTH(DATE_ADD(DATE(m.max_week_end_date), INTERVAL (1 - QUARTER(m.max_week_end_date)) QUARTER)) - 1) DAY),\n      INTERVAL 3 MONTH\n    ) AS prior_quarter_start,\n    DATE_SUB(\n      DATE_SUB(DATE_ADD(DATE(m.max_week_end_date), INTERVAL (1 - QUARTER(m.max_week_end_date)) QUARTER), INTERVAL (DAYOFMONTH(DATE_ADD(DATE(m.max_week_end_date), INTERVAL (1 - QUARTER(m.max_week_end_date)) QUARTER)) - 1) DAY),\n      INTERVAL 1 DAY\n    ) AS prior_quarter_end,\n    (m.max_week_end_date >= LAST_DAY(DATE_ADD(DATE_SUB(DATE_ADD(DATE(m.max_week_end_date), INTERVAL (1 - QUARTER(m.max_week_end_date)) QUARTER), INTERVAL (DAYOFMONTH(DATE_ADD(DATE(m.max_week_end_date), INTERVAL (1 - QUARTER(m.max_week_end_date)) QUARTER)) - 1) DAY), INTERVAL 2 MONTH))) AS current_complete,\n    (m.max_week_end_date >= DATE_SUB(\n      DATE_SUB(DATE_ADD(DATE(m.max_week_end_date), INTERVAL (1 - QUARTER(m.max_week_end_date)) QUARTER), INTERVAL (DAYOFMONTH(DATE_ADD(DATE(m.max_week_end_date), INTERVAL (1 - QUARTER(m.max_week_end_date)) QUARTER)) - 1) DAY),\n      INTERVAL 1 DAY\n    )) AS prior_complete,\n    (\n      ((m.max_week_end_date >= LAST_DAY(DATE_ADD(DATE_SUB(DATE_ADD(DATE(m.max_week_end_date), INTERVAL (1 - QUARTER(m.max_week_end_date)) QUARTER), INTERVAL (DAYOFMONTH(DATE_ADD(DATE(m.max_week_end_date), INTERVAL (1 - QUARTER(m.max_week_end_date)) QUARTER)) - 1) DAY), INTERVAL 2 MONTH))))\n      AND\n      ((m.max_week_end_date >= DATE_SUB(\n        DATE_SUB(DATE_ADD(DATE(m.max_week_end_date), INTERVAL (1 - QUARTER(m.max_week_end_date)) QUARTER), INTERVAL (DAYOFMONTH(DATE_ADD(DATE(m.max_week_end_date), INTERVAL (1 - QUARTER(m.max_week_end_date)) QUARTER)) - 1) DAY),\n        INTERVAL 1 DAY\n      )))\n    ) AS both_complete\n  FROM max_week_end_date_cte m\n),\nquarter_year_labels_cte AS (\n  SELECT\n    qc.*,\n    (SELECT d.quarter_year\n     FROM data_867 d\n     WHERE d.week_end_date = (\n       SELECT MAX(d2.week_end_date)\n       FROM data_867 d2\n       WHERE d2.week_end_date BETWEEN qc.current_quarter_start AND qc.current_quarter_end\n     )\n     LIMIT 1\n    ) AS quarter_year_current,\n    (SELECT d.quarter_year\n     FROM data_867 d\n     WHERE d.week_end_date = (\n       SELECT MAX(d2.week_end_date)\n       FROM data_867 d2\n       WHERE d2.week_end_date BETWEEN qc.prior_quarter_start AND qc.prior_quarter_end\n     )\n     LIMIT 1\n    ) AS quarter_year_prior\n  FROM quarter_calendar_cte qc\n),\nweeks_scoped_cte AS (\n  SELECT d.week_end_date\n  FROM data_867 d\n  CROSS JOIN quarter_year_labels_cte q\n  WHERE d.week_end_date BETWEEN q.prior_quarter_start AND q.current_quarter_end\n  GROUP BY d.week_end_date\n),\nweek_inclusion_cte AS (\n  SELECT\n    q.max_week_end_date,\n    q.current_quarter_start,\n    q.current_quarter_end,\n    q.prior_quarter_start,\n    q.prior_quarter_end,\n    q.current_complete,\n    q.prior_complete,\n    q.both_complete,\n    q.quarter_year_current,\n    q.quarter_year_prior,\n    GROUP_CONCAT(\n      CASE\n        WHEN GREATEST(DATE_SUB(w.week_end_date, INTERVAL 6 DAY), q.current_quarter_start)\n             <= LEAST(w.week_end_date, q.current_quarter_end)\n         AND (DATEDIFF(\n                LEAST(w.week_end_date, q.current_quarter_end),\n                GREATEST(DATE_SUB(w.week_end_date, INTERVAL 6 DAY), q.current_quarter_start)\n              ) + 1) >= 3\n        THEN DATE_FORMAT(w.week_end_date, '%Y-%m-%d')\n      END\n      ORDER BY w.week_end_date SEPARATOR ','\n    ) AS included_week_end_dates_current_qtr,\n    SUM(\n      CASE\n        WHEN GREATEST(DATE_SUB(w.week_end_date, INTERVAL 6 DAY), q.current_quarter_start)\n             <= LEAST(w.week_end_date, q.current_quarter_end)\n         AND (DATEDIFF(\n                LEAST(w.week_end_date, q.current_quarter_end),\n                GREATEST(DATE_SUB(w.week_end_date, INTERVAL 6 DAY), q.current_quarter_start)\n              ) + 1) >= 3\n        THEN 1 ELSE 0\n      END\n    ) AS included_week_count_current_qtr,\n    GROUP_CONCAT(\n      CASE\n        WHEN GREATEST(DATE_SUB(w.week_end_date, INTERVAL 6 DAY), q.prior_quarter_start)\n             <= LEAST(w.week_end_date, q.prior_quarter_end)\n         AND (DATEDIFF(\n                LEAST(w.week_end_date, q.prior_quarter_end),\n                GREATEST(DATE_SUB(w.week_end_date, INTERVAL 6 DAY), q.prior_quarter_start)\n              ) + 1) >= 3\n        THEN DATE_FORMAT(w.week_end_date, '%Y-%m-%d')\n      END\n      ORDER BY w.week_end_date SEPARATOR ','\n    ) AS included_week_end_dates_prior_qtr,\n    SUM(\n      CASE\n        WHEN GREATEST(DATE_SUB(w.week_end_date, INTERVAL 6 DAY), q.prior_quarter_start)\n             <= LEAST(w.week_end_date, q.prior_quarter_end)\n         AND (DATEDIFF(\n                LEAST(w.week_end_date, q.prior_quarter_end),\n                GREATEST(DATE_SUB(w.week_end_date, INTERVAL 6 DAY), q.prior_quarter_start)\n              ) + 1) >= 3\n        THEN 1 ELSE 0\n      END\n    ) AS included_week_count_prior_qtr\n  FROM weeks_scoped_cte w\n  CROSS JOIN quarter_year_labels_cte q\n  GROUP BY\n    q.max_week_end_date, q.current_quarter_start, q.current_quarter_end,\n    q.prior_quarter_start, q.prior_quarter_end, q.current_complete, q.prior_complete, q.both_complete,\n    q.quarter_year_current, q.quarter_year_prior\n),\nregion_quarter_metrics_cte AS (\n  SELECT\n    d.campus_region,\n    MAX(wi.quarter_year_current) AS quarter_year_current,\n    MAX(wi.quarter_year_prior) AS quarter_year_prior,\n    CAST(SUM(CASE WHEN d.week_end_date BETWEEN wi.current_quarter_start AND wi.current_quarter_end THEN d.relmora_total_mg ELSE 0 END) AS SIGNED) AS quarterly_sales_current_qtr,\n    CAST(SUM(CASE WHEN d.week_end_date BETWEEN wi.prior_quarter_start AND wi.prior_quarter_end THEN d.relmora_total_mg ELSE 0 END) AS SIGNED) AS quarterly_sales_prior_qtr,\n    CAST(\n      IF(\n        MAX(wi.both_complete) = 1,\n        SUM(CASE WHEN d.week_end_date BETWEEN wi.current_quarter_start AND wi.current_quarter_end THEN d.relmora_total_mg ELSE 0 END),\n        SUM(\n          CASE\n            WHEN GREATEST(DATE_SUB(d.week_end_date, INTERVAL 6 DAY), wi.current_quarter_start)\n                 <= LEAST(d.week_end_date, wi.current_quarter_end)\n             AND (DATEDIFF(\n                    LEAST(d.week_end_date, wi.current_quarter_end),\n                    GREATEST(DATE_SUB(d.week_end_date, INTERVAL 6 DAY), wi.current_quarter_start)\n                  ) + 1) >= 3\n            THEN d.relmora_total_mg ELSE 0\n          END\n        ) / NULLIF(MAX(wi.included_week_count_current_qtr), 0)\n      ) AS SIGNED\n    ) AS comparison_basis_sales_current,\n    CAST(\n      IF(\n        MAX(wi.both_complete) = 1,\n        SUM(CASE WHEN d.week_end_date BETWEEN wi.prior_quarter_start AND wi.prior_quarter_end THEN d.relmora_total_mg ELSE 0 END),\n        SUM(\n          CASE\n            WHEN GREATEST(DATE_SUB(d.week_end_date, INTERVAL 6 DAY), wi.prior_quarter_start)\n                 <= LEAST(d.week_end_date, wi.prior_quarter_end)\n             AND (DATEDIFF(\n                    LEAST(d.week_end_date, wi.prior_quarter_end),\n                    GREATEST(DATE_SUB(d.week_end_date, INTERVAL 6 DAY), wi.prior_quarter_start)\n                  ) + 1) >= 3\n            THEN d.relmora_total_mg ELSE 0\n          END\n        ) / NULLIF(MAX(wi.included_week_count_prior_qtr), 0)\n      ) AS SIGNED\n    ) AS comparison_basis_sales_prior,\n    MAX(wi.included_week_end_dates_current_qtr) AS included_week_end_dates_current_qtr,\n    MAX(wi.included_week_end_dates_prior_qtr) AS included_week_end_dates_prior_qtr,\n    MAX(wi.both_complete) AS both_complete_flag\n  FROM data_867 d\n  CROSS JOIN week_inclusion_cte wi\n  WHERE d.week_end_date BETWEEN wi.prior_quarter_start AND wi.current_quarter_end\n  GROUP BY d.campus_region\n),\nnation_quarter_metrics_cte AS (\n  SELECT\n    CAST(SUM(CASE WHEN d.week_end_date BETWEEN wi.current_quarter_start AND wi.current_quarter_end THEN d.relmora_total_mg ELSE 0 END) AS SIGNED) AS nation_quarterly_sales_current_qtr,\n    CAST(SUM(CASE WHEN d.week_end_date BETWEEN wi.prior_quarter_start AND wi.prior_quarter_end THEN d.relmora_total_mg ELSE 0 END) AS SIGNED) AS nation_quarterly_sales_prior_qtr,\n    CAST(\n      IF(\n        MAX(wi.both_complete) = 1,\n        SUM(CASE WHEN d.week_end_date BETWEEN wi.current_quarter_start AND wi.current_quarter_end THEN d.relmora_total_mg ELSE 0 END),\n        SUM(\n          CASE\n            WHEN GREATEST(DATE_SUB(d.week_end_date, INTERVAL 6 DAY), wi.current_quarter_start)\n                 <= LEAST(d.week_end_date, wi.current_quarter_end)\n             AND (DATEDIFF(\n                    LEAST(d.week_end_date, wi.current_quarter_end),\n                    GREATEST(DATE_SUB(d.week_end_date, INTERVAL 6 DAY), wi.current_quarter_start)\n                  ) + 1) >= 3\n            THEN d.relmora_total_mg ELSE 0\n          END\n        ) / NULLIF(MAX(wi.included_week_count_current_qtr), 0)\n      ) AS SIGNED\n    ) AS nation_comparison_basis_sales_current,\n    CAST(\n      IF(\n        MAX(wi.both_complete) = 1,\n        SUM(CASE WHEN d.week_end_date BETWEEN wi.prior_quarter_start AND wi.prior_quarter_end THEN d.relmora_total_mg ELSE 0 END),\n        SUM(\n          CASE\n            WHEN GREATEST(DATE_SUB(d.week_end_date, INTERVAL 6 DAY), wi.prior_quarter_start)\n                 <= LEAST(d.week_end_date, wi.prior_quarter_end)\n             AND (DATEDIFF(\n                    LEAST(d.week_end_date, wi.prior_quarter_end),\n                    GREATEST(DATE_SUB(d.week_end_date, INTERVAL 6 DAY), wi.prior_quarter_start)\n                  ) + 1) >= 3\n            THEN d.relmora_total_mg ELSE 0\n          END\n        ) / NULLIF(MAX(wi.included_week_count_prior_qtr), 0)\n      ) AS SIGNED\n    ) AS nation_comparison_basis_sales_prior,\n    MAX(wi.both_complete) AS both_complete_flag\n  FROM data_867 d\n  CROSS JOIN week_inclusion_cte wi\n  WHERE d.week_end_date BETWEEN wi.prior_quarter_start AND wi.current_quarter_end\n),\nfinal_calc_cte AS (\n  SELECT\n    r.campus_region,\n    r.quarter_year_current,\n    r.quarter_year_prior,\n    r.quarterly_sales_current_qtr,\n    r.quarterly_sales_prior_qtr,\n    CONCAT(\n      CAST(\n        CASE\n          WHEN r.comparison_basis_sales_prior = 0 AND r.comparison_basis_sales_current > 0 THEN 100\n          WHEN r.comparison_basis_sales_prior = 0 AND r.comparison_basis_sales_current = 0 THEN 0\n          ELSE ((r.comparison_basis_sales_current - r.comparison_basis_sales_prior) / NULLIF(r.comparison_basis_sales_prior, 0)) * 100\n        END AS SIGNED\n      ),\n      '%'\n    ) AS growth_qoq_pct,\n    CONCAT(\n      CAST(\n        (\n          CASE\n            WHEN r.both_complete_flag = 1 THEN (r.quarterly_sales_current_qtr / NULLIF(n.nation_quarterly_sales_current_qtr, 0)) * 100\n            ELSE (r.comparison_basis_sales_current / NULLIF(n.nation_comparison_basis_sales_current, 0)) * 100\n          END\n        ) AS SIGNED\n      ),\n      '%'\n    ) AS region_contribution_pct,\n    CONCAT(\n      CAST(\n        CASE\n          WHEN n.nation_comparison_basis_sales_prior = 0 AND n.nation_comparison_basis_sales_current > 0 THEN 100\n          WHEN n.nation_comparison_basis_sales_prior = 0 AND n.nation_comparison_basis_sales_current = 0 THEN 0\n          ELSE ((n.nation_comparison_basis_sales_current - n.nation_comparison_basis_sales_prior) / NULLIF(n.nation_comparison_basis_sales_prior, 0)) * 100\n        END AS SIGNED\n      ),\n      '%'\n    ) AS nation_growth_qoq_pct,\n    CASE\n      WHEN\n        (\n          CASE\n            WHEN r.comparison_basis_sales_prior = 0 AND r.comparison_basis_sales_current > 0 THEN 100\n            WHEN r.comparison_basis_sales_prior = 0 AND r.comparison_basis_sales_current = 0 THEN 0\n            ELSE ((r.comparison_basis_sales_current - r.comparison_basis_sales_prior) / NULLIF(r.comparison_basis_sales_prior, 0)) * 100\n          END\n        )\n        >\n        (\n          CASE\n            WHEN n.nation_comparison_basis_sales_prior = 0 AND n.nation_comparison_basis_sales_current > 0 THEN 100\n            WHEN n.nation_comparison_basis_sales_prior = 0 AND n.nation_comparison_basis_sales_current = 0 THEN 0\n            ELSE ((n.nation_comparison_basis_sales_current - n.nation_comparison_basis_sales_prior) / NULLIF(n.nation_comparison_basis_sales_prior, 0)) * 100\n          END\n        )\n      THEN 'Higher' ELSE 'Lower'\n    END AS performance_vs_nation,\n    CASE WHEN r.both_complete_flag = 1 THEN 'Total Sales' ELSE 'Weekly Average' END AS normalization_basis,\n    r.included_week_end_dates_current_qtr,\n    r.included_week_end_dates_prior_qtr\n  FROM region_quarter_metrics_cte r\n  CROSS JOIN nation_quarter_metrics_cte n\n)\nSELECT\n  campus_region,\n  quarter_year_current,\n  quarter_year_prior,\n  quarterly_sales_current_qtr,\n  quarterly_sales_prior_qtr,\n  growth_qoq_pct,\n  region_contribution_pct,\n  nation_growth_qoq_pct,\n  performance_vs_nation,\n  normalization_basis,\n  included_week_end_dates_current_qtr,\n  included_week_end_dates_prior_qtr\nFROM final_calc_cte\nORDER BY CAST(REPLACE(region_contribution_pct, '%', '') AS SIGNED) DESC;",
+      "human_verdict": "SUCCESS",
+      "embedding text": "Intent: Identify which campus regions are driving quarterly performance by calculating current-quarter sales, prior-quarter sales, QoQ growth %, national QoQ growth %, and each region's contribution % to national current-quarter sales, using the most recent available week_end_date to define the current quarter and applying weekly-average normalization if either quarter is incomplete.\nUser Question: Which regions are driving quarterly performance?"
+    },
+    "2026-03-14T09:04:09.230362+00:00Z": {
+      "run_id": "2026-03-14T09:04:09.230362+00:00Z",
+      "question": "Compare the growth of the month Jan'26 and Dec'25?",
+      "query_decomposition": {
+        "intent_summary": "Compare relmora sales growth between Dec'25 and Jan'26, using total monthly sales if both months are complete; otherwise normalize both months to weekly average sales before calculating percent growth, and include absolute sales values for both months.",
+        "tables": [
+          "data_867"
+        ],
+        "filters": [
+          {
+            "column": "month_year",
+            "operator": "IN",
+            "value": "25-Dec,26-Jan"
+          }
+        ],
+        "aggregations": [
+          {
+            "metric_name": "monthly_sales_dec25",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "monthly_sales_jan26",
+            "function": "SUM",
+            "column": "relmora_total_mg",
+            "group_level": "none"
+          },
+          {
+            "metric_name": "weekly_avg_sales_dec25",
+            "function": "AVG",
+            "column": "relmora_total_mg",
+            "group_level": "week_end_date"
+          },
+          {
+            "metric_name": "weekly_avg_sales_jan26",
+            "function": "AVG",
+            "column": "relmora_total_mg",
+            "group_level": "week_end_date"
+          }
+        ],
+        "subqueries": [
+          {
+            "name": "max_week_end_date_cte",
+            "purpose": "Identify the most recent week_end_date available to assess completeness of Dec'25 and Jan'26",
+            "logic": "Compute MAX(week_end_date) from data_867"
+          },
+          {
+            "name": "calendar_boundaries_cte",
+            "purpose": "Define calendar boundaries for Dec 2025 and Jan 2026 using calendar logic (not dataset min/max)",
+            "logic": "Derive period_start and period_end for Dec 2025 (2025-12-01 to 2025-12-31) and Jan 2026 (2026-01-01 to 2026-01-31)"
+          },
+          {
+            "name": "period_completeness_cte",
+            "purpose": "Determine whether each month is complete based on max_week_end_date and calendar month end",
+            "logic": "Dec'25 complete if max_week_end_date >= 2025-12-31; Jan'26 complete if max_week_end_date >= 2026-01-31"
+          },
+          {
+            "name": "weeks_in_period_cte",
+            "purpose": "When normalization is required, assign weeks to each month using the >=3-day overlap rule and count included weeks",
+            "logic": "For each week_end_date, define week window [week_end_date-6, week_end_date]; compute overlap days with each target month window; include week if overlap >= 3; count included weeks per month and sum relmora_total_mg across included weeks"
+          },
+          {
+            "name": "comparison_metrics_cte",
+            "purpose": "Compute comparable sales basis (total vs weekly average) for both months and calculate growth percentage with edge-case handling",
+            "logic": "If both months complete: use total monthly SUM(relmora_total_mg) per month based on month_year. If at least one month incomplete: for each month compute weekly_average_sales = total_sales_included_weeks / weeks_included (integer). Growth% = ((current - previous) / previous)*100 expressed as integer percent; if previous=0 and current>0 then growth=100%; ensure both months use same basis."
+          }
+        ],
+        "group_by": [],
+        "order_by": [],
+        "limit": null,
+        "final_output": {
+          "columns": [
+            "sales_dec25",
+            "sales_jan26",
+            "growth_dec25_to_jan26%"
+          ],
+          "row_granularity": "single_row"
+        },
+        "validation_rules": [
+          "Use data_867 and relmora_total_mg for sales because no market share/competitor comparison was requested",
+          "Month labels must match month_year format exactly: Dec'25 -> '25-Dec', Jan'26 -> '26-Jan'",
+          "Determine month boundaries via calendar logic: Dec 2025 is 2025-12-01 to 2025-12-31; Jan 2026 is 2026-01-01 to 2026-01-31",
+          "Compute max_week_end_date using MAX(week_end_date); never use system date; never use MAX(month_year) for recency or completeness",
+          "A month is complete only if max_week_end_date >= calendar month end date for that month",
+          "If at least one month is incomplete, normalize both months to weekly average sales using week_end_date and the >=3-day overlap week inclusion rule",
+          "Do not apply week inclusion logic when both months are complete; aggregate by month_year for totals in that case",
+          "Consistent comparison rule: compare total vs total when both complete, otherwise weekly average vs weekly average",
+          "All growth metrics must be percent format with '%' appended; if previous period sales is 0 and current > 0, set growth to 100%",
+          "All computations related to growth and weekly averages must be converted to integers (no decimals) before reporting",
+          "Always accompany the growth% with the corresponding absolute sales values for both months"
+        ]
+      },
+      "final_sql": "WITH\nmax_week_end_date_cte AS (\n  SELECT MAX(week_end_date) AS max_week_end_date\n  FROM data_867\n),\nperiod_completeness_cte AS (\n  SELECT\n    MAX(CASE WHEN max_week_end_date >= DATE('2025-12-31') THEN 1 ELSE 0 END) AS dec25_complete,\n    MAX(CASE WHEN max_week_end_date >= DATE('2026-01-31') THEN 1 ELSE 0 END) AS jan26_complete\n  FROM max_week_end_date_cte\n),\nmonthly_totals_cte AS (\n  SELECT\n    SUM(CASE WHEN month_year = '25-Dec' THEN relmora_total_mg ELSE 0 END) AS monthly_sales_dec25,\n    SUM(CASE WHEN month_year = '26-Jan' THEN relmora_total_mg ELSE 0 END) AS monthly_sales_jan26\n  FROM data_867\n  WHERE month_year IN ('25-Dec', '26-Jan')\n),\nweeks_in_period_cte AS (\n  SELECT\n    month_key,\n    COUNT(DISTINCT week_end_date) AS weeks_included,\n    SUM(relmora_total_mg) AS total_sales_included_weeks\n  FROM (\n    SELECT\n      d.week_end_date,\n      d.relmora_total_mg,\n      CASE\n        WHEN overlap_days_dec >= 3 THEN '25-Dec'\n        WHEN overlap_days_jan >= 3 THEN '26-Jan'\n        ELSE NULL\n      END AS month_key\n    FROM (\n      SELECT\n        week_end_date,\n        relmora_total_mg,\n        GREATEST(\n          0,\n          DATEDIFF(\n            LEAST(week_end_date, DATE('2025-12-31')),\n            GREATEST(DATE_SUB(week_end_date, INTERVAL 6 DAY), DATE('2025-12-01'))\n          ) + 1\n        ) AS overlap_days_dec,\n        GREATEST(\n          0,\n          DATEDIFF(\n            LEAST(week_end_date, DATE('2026-01-31')),\n            GREATEST(DATE_SUB(week_end_date, INTERVAL 6 DAY), DATE('2026-01-01'))\n          ) + 1\n        ) AS overlap_days_jan\n      FROM data_867\n      WHERE month_year IN ('25-Dec', '26-Jan')\n    ) d\n  ) x\n  WHERE month_key IN ('25-Dec', '26-Jan')\n  GROUP BY month_key\n),\ncomparison_metrics_cte AS (\n  SELECT\n    CASE\n      WHEN pc.dec25_complete = 1 AND pc.jan26_complete = 1\n        THEN CAST(mt.monthly_sales_dec25 AS SIGNED)\n      ELSE CAST(COALESCE(wp_dec.total_sales_included_weeks, 0) / NULLIF(COALESCE(wp_dec.weeks_included, 0), 0) AS SIGNED)\n    END AS sales_dec25,\n    CASE\n      WHEN pc.dec25_complete = 1 AND pc.jan26_complete = 1\n        THEN CAST(mt.monthly_sales_jan26 AS SIGNED)\n      ELSE CAST(COALESCE(wp_jan.total_sales_included_weeks, 0) / NULLIF(COALESCE(wp_jan.weeks_included, 0), 0) AS SIGNED)\n    END AS sales_jan26\n  FROM period_completeness_cte pc\n  CROSS JOIN monthly_totals_cte mt\n  LEFT JOIN weeks_in_period_cte wp_dec\n    ON wp_dec.month_key = '25-Dec'\n  LEFT JOIN weeks_in_period_cte wp_jan\n    ON wp_jan.month_key = '26-Jan'\n)\nSELECT\n  sales_dec25 AS sales_dec25,\n  sales_jan26 AS sales_jan26,\n  CONCAT(\n    CAST(\n      ROUND(\n        CASE\n          WHEN sales_dec25 = 0 AND sales_jan26 > 0 THEN 100\n          WHEN sales_dec25 = 0 AND sales_jan26 = 0 THEN 0\n          ELSE ((sales_jan26 - sales_dec25) / NULLIF(sales_dec25, 0)) * 100\n        END,\n        0\n      ) AS SIGNED\n    ),\n    '%'\n  ) AS `growth_dec25_to_jan26%`\nFROM comparison_metrics_cte;",
+      "human_verdict": "SUCCESS",
+      "embedding text": "Intent: Compare relmora sales growth between Dec'25 and Jan'26, using total monthly sales if both months are complete; otherwise normalize both months to weekly average sales before calculating percent growth, and include absolute sales values for both months.\nUser Question: Compare the growth of the month Jan'26 and Dec'25?"
+    }
+  }
+}
