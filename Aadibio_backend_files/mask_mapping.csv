@@ -1,0 +1,242 @@
+column_name,original_value,masked_value
+region,Central,region_1
+region,East,region_2
+region,West,region_3
+region,UNKNOWN,region_4
+speciality_distributor,MPB,speciality_distributor_1
+speciality_distributor,CENCORA,speciality_distributor_2
+speciality_distributor,MSH,speciality_distributor_3
+parent_name,UNIVERSITY OF TEXAS,parent_name_1
+parent_name,UNIVERSITY OF MICHIGAN,parent_name_2
+parent_name,UPMC HEALTH,parent_name_3
+parent_name,VANDERBILT UNIVERSITY,parent_name_4
+parent_name,U.S. DEPARTMENT OF VETERANS AFFAIRS,parent_name_5
+parent_name,MULTICARE HEALTH SYSTEM,parent_name_6
+parent_name,STANFORD HEALTH CARE,parent_name_7
+parent_name,BANNER HEALTH,parent_name_8
+parent_name,UNIVERSITY OF FLORIDA,parent_name_9
+parent_name,CATAWBA COUNTY NORTH CAROLINA,parent_name_10
+parent_name,MASS GENERAL BRIGHAM INC,parent_name_11
+parent_name,H. LEE MOFFITT CANCER CENTER AND RESEARCH INSTITUTE,parent_name_12
+parent_name,LIFEBRIDGE HEALTH INC,parent_name_13
+parent_name,ADVOCATE AURORA HEALTH,parent_name_14
+parent_name,CITY OF HOPE,parent_name_15
+parent_name,OSU WEXNER MEDICAL CENTER,parent_name_16
+parent_name,CARE NEW ENGLAND HEALTH SYSTEM,parent_name_17
+parent_name,DANA FARBER CANCER INSTITUTE INC,parent_name_18
+parent_name,FLORIDA CANCER SPECIALISTS & RESEARCH INSTITUTE LLC,parent_name_19
+parent_name,WASHINGTON UNIVERSITY,parent_name_20
+parent_name,NORTHWESTERN MEDICINE,parent_name_21
+parent_name,MERCY HEALTH SERVICES INC,parent_name_22
+parent_name,UCLA HEALTH SYSTEM,parent_name_23
+parent_name,CONSULTANTS IN MEDICAL ONCOLOGY & HEMATOLOGY PC,parent_name_24
+parent_name,MEMORIAL SLOAN KETTERING CANCER CENTER GROUP,parent_name_25
+parent_name,NEWYORK - PRESBYTERIAN HEALTH,parent_name_26
+parent_name,INDIANA UNIVERSITY,parent_name_27
+parent_name,JOHNS HOPKINS MEDICINE,parent_name_28
+parent_name,MEMORIAL HEALTHCARE SYSTEM,parent_name_29
+parent_name,FROEDTERT HEALTH,parent_name_30
+parent_name,MAINE CENTER FOR CANCER MEDICINE & BLOOD DISORDERS PA,parent_name_31
+parent_name,MAYO CLINIC JACKSONVILLE,parent_name_32
+parent_name,HOAG HOSPITAL NEWPORT BEACH,parent_name_33
+parent_name,LIFESPAN,parent_name_34
+parent_name,SARCOMA ONCOLOGY CENTER,parent_name_35
+parent_name,CANCER CENTER ASSOCIATES,parent_name_36
+parent_name,KAISER PERMANENTE,parent_name_37
+parent_name,NORTHERN LIGHT HEALTH,parent_name_38
+parent_name,CHRISTIANA CARE HEALTH SYSTEM,parent_name_39
+parent_name,CARTI,parent_name_40
+parent_name,UTAH CANCER SPECIALISTS PC,parent_name_41
+parent_name,HAWAII HEALTH SYSTEMS CORPORATION,parent_name_42
+parent_name,SUTTER HEALTH,parent_name_43
+parent_name,COMMONSPIRIT HEALTH,parent_name_44
+parent_name,TEXAS ONCOLOGY PA,parent_name_45
+parent_name,The Center Of Hope,parent_name_46
+parent_name,VIRGINIA CANCER SPECIALISTS P.C.,parent_name_47
+parent_name,JEFFERSON HEALTH,parent_name_48
+parent_name,-,parent_name_49
+parent_name,MANHATTAN ADVANCED CARE,parent_name_50
+parent_name,PROMEDICA HEALTH SYSTEM,parent_name_51
+parent_name,SSM HEALTH,parent_name_52
+parent_name,CEDARS-SINAI HEALTH SYSTEM,parent_name_53
+parent_name,OCHSNER HEALTH SYSTEM,parent_name_54
+parent_name,ATRIUM HEALTH,parent_name_55
+parent_name,INTERMOUNTAIN HEALTHCARE,parent_name_56
+parent_name,UNIVERSITY OF MIAMI,parent_name_57
+parent_name,NORTHWELL HEALTH,parent_name_58
+parent_name,COOKEVILLE REGIONAL HEALTH SYSTEM,parent_name_59
+parent_name,ATLANTIC HEALTH SYSTEM,parent_name_60
+parent_name,WOODLANDS MEDICAL SPECIALISTS P A,parent_name_61
+parent_name,COREWELL HEALTH,parent_name_62
+parent_name,UNIVERSITY OF CALIFORNIA SAN FRANCISCO,parent_name_63
+parent_name,SHAPIRO STAFFORD YEE & POLONSKY PC,parent_name_64
+parent_name,NORTHSIDE HOSPITAL HEALTHCARE SYSTEM,parent_name_65
+parent_name,NYC HEALTH + HOSPITALS,parent_name_66
+parent_name,Wake Forest Baptist hospital,parent_name_67
+parent_name,RWJBARNABAS HEALTH,parent_name_68
+parent_name,VIRGINIA COMMONWEALTH UNIVERSITY SCHOOL OF MEDICINE,parent_name_69
+parent_name,SAINT FRANCIS HEALTHCARE SYSTEM,parent_name_70
+parent_name,THE CENTER FOR CANCER & BLOOD DISORDERS,parent_name_71
+parent_name,UMASS MEMORIAL HEALTH CARE,parent_name_72
+parent_name,UNIVERSITY OF SOUTHERN CALIFORNIA,parent_name_73
+parent_name,MICHIGAN HEALTHCARE PROFESSIONALS PC,parent_name_74
+parent_name,BAPTIST HEALTH,parent_name_75
+parent_name,PROVIDENCE ST. JOSEPH HEALTH,parent_name_76
+parent_name,VENTAS INC,parent_name_77
+parent_name,HIGHMARK,parent_name_78
+parent_name,NORTON HEALTHCARE,parent_name_79
+parent_name,FRED HUTCHINSON CANCER CENTER,parent_name_80
+parent_name,LOMA LINDA UNIVERSITY HEALTH,parent_name_81
+parent_name,MAYO CLINIC HOSPITAL ROCHESTER,parent_name_82
+parent_name,AVERA HEALTH,parent_name_83
+parent_name,EMORY HEALTHCARE,parent_name_84
+parent_name,PEACEHEALTH NETWORKS,parent_name_85
+parent_name,THE UNIVERSITY OF KANSAS HEALTH SYSTEM,parent_name_86
+parent_name,RICHMOND MEDICAL CENTER,parent_name_87
+parent_name,CENTRAL COAST ONCOLOGY & HEMATOLOGY,parent_name_88
+parent_name,FRANCISCAN HEALTH,parent_name_89
+parent_name,ROCKY MOUNTAIN CANCER CENTERS LLP,parent_name_90
+parent_name,FORT WAYNE MEDICAL ONCOLOGY AND HEMATOLOGY INC,parent_name_91
+parent_name,MINNESOTA ONCOLOGY HEMATOLOGY PA,parent_name_92
+parent_name,CENTRA HEALTH INC,parent_name_93
+parent_name,SUNY ACADEMIC MEDICAL CENTERS,parent_name_94
+parent_name,AMERICAN ONCOLOGY NETWORK LLC,parent_name_95
+parent_name,CANCER CARE CENTERS OF BREVARD INC,parent_name_96
+parent_name,STOCKTON HEMATOLOGY ONCOLOGY MEDICAL GROUP INC,parent_name_97
+parent_name,COMPREHENSIVE HEMATOLOGY ONCOLOGY LLC,parent_name_98
+parent_name,LEE HEALTH,parent_name_99
+parent_name,STATE OF NEW JERSEY,parent_name_100
+parent_name,WEILL CORNELL MEDICINE,parent_name_101
+parent_name,UNIVERSITY OF CALIFORNIA DAVIS,parent_name_102
+parent_name,INOVA HEALTH SYSTEM,parent_name_103
+parent_name,UCHEALTH,parent_name_104
+parent_name,UNITED STATES ARMY,parent_name_105
+parent_name,TIDELANDS HEALTH,parent_name_106
+parent_name,THE CHILDRENS MERCY HOSPITAL,parent_name_107
+parent_name,HCA HEALTHCARE,parent_name_108
+parent_name,INNOVATIVE INFUSIONS LLC,parent_name_109
+parent_name,UNIVERSITY OF KENTUCKY,parent_name_110
+parent_name,CHILDRENS HEALTHCARE OF ATLANTA INC,parent_name_111
+parent_name,UNC HEALTH,parent_name_112
+parent_name,KAWEAH HEALTH,parent_name_113
+parent_name,UNIVERSITY OF CALIFORNIA IRVINE,parent_name_114
+parent_name,SOUTH TEXAS ONCOLOGY AND HEMATOLOGY PLLC,parent_name_115
+parent_name,FRANCISCAN MISSIONARIES OF OUR LADY HEALTH SYSTEM,parent_name_116
+parent_name,UNKNOWN,parent_name_117
+parent_name,MOUNT SINAI HEALTH SYSTEM,parent_name_118
+parent_name,ENGLEWOOD HEALTHCARE SYSTEM,parent_name_119
+parent_name,MARYLAND ONCOLOGY HEMATOLOGY PA,parent_name_120
+parent_name,YALE SCHOOL OF MEDICINE,parent_name_121
+parent_name,UNIVERSITY OF IOWA,parent_name_122
+parent_name,SKAGIT REGIONAL HEALTH,parent_name_123
+parent_name,COMMUNITY HEALTH PARTNERS,parent_name_124
+parent_name,EISENHOWER HEALTH,parent_name_125
+parent_name,MAHONING VALLEY HEMATOLOGY ONCOLOGY ASSOC. INC.,parent_name_126
+parent_name,NORTH SHORE HEMATOLOGY ONCOLOGY ASSOCIATES PC,parent_name_127
+parent_name,UC SAN DIEGO HEALTH,parent_name_128
+parent_name,UNIVERSITY OF PENNSYLVANIA HEALTH SYSTEM,parent_name_129
+parent_name,UW HEALTH,parent_name_130
+parent_name,NORTHWEST CANCER CENTERS P.C.,parent_name_131
+parent_name,TENET HEALTHCARE,parent_name_132
+parent_name,PRESBYTERIAN HEALTHCARE SERVICES,parent_name_133
+parent_name,RUSH HEALTH,parent_name_134
+parent_name,GOSHEN HEALTH,parent_name_135
+parent_name,CENTRE COUNTY CANCER CENTER,parent_name_136
+parent_name,HARTFORD HEALTHCARE,parent_name_137
+parent_name,VIRGINIA ONCOLOGY ASSOCIATES,parent_name_138
+parent_name,UNIVERSAL HEALTH SERVICES,parent_name_139
+parent_name,MEDSTAR HEALTH,parent_name_140
+parent_name,DARTMOUTH HEALTH,parent_name_141
+parent_name,DUKE HEALTH,parent_name_142
+parent_name,SCRIPPS HEALTH,parent_name_143
+parent_name,CANCER CENTER OF KANSAS.P.A.,parent_name_144
+parent_name,REGIONAL ENTERPRISES INC,parent_name_145
+parent_name,THE CANCER CENTER OF HUNTSVILLE PC,parent_name_146
+parent_name,SOUTHWEST WOMENS ONCOLOGY INC,parent_name_147
+parent_name,BOZEMAN HEALTH,parent_name_148
+parent_name,ARIZONA ONCOLOGY ASSOCIATES PC,parent_name_149
+parent_name,PACIFIC HEMATOLOGY ONCOLOGY ASSOC.,parent_name_150
+parent_name,NUVANCE HEALTH,parent_name_151
+parent_name,ST. LUKES UNIVERSITY HEALTH NETWORK,parent_name_152
+parent_name,THE QUEENS HEALTH SYSTEMS,parent_name_153
+parent_name,MOUNTAIN HEALTH,parent_name_154
+parent_name,MAYO CLINIC ARIZONA,parent_name_155
+parent_name,LEGACY HEALTH,parent_name_156
+parent_name,AUGUSTA UNIVERSITY,parent_name_157
+parent_name,UNIVERSITY OF VERMONT HEALTH NETWORK INC,parent_name_158
+parent_name,HENRY FORD HEALTH SYSTEM,parent_name_159
+parent_name,PARKVIEW HEALTH,parent_name_160
+parent_name,NEW MEXICO ONCOLOGY HEMATOLOGY CONSULTANTS LTD,parent_name_161
+parent_name,ONCOLOGY-HEMATOLOGY ASSOCIATES OF CENTRAL ILLINOIS P C,parent_name_162
+parent_name,STATE OF OKLAHOMA,parent_name_163
+parent_name,BAPTIST HEALTH SOUTH FLORIDA,parent_name_164
+parent_name,NELSON GUSTAVO NEDER KALIL M.D.,parent_name_165
+parent_name,HOUSTON METHODIST,parent_name_166
+parent_name,FORREST HEALTH,parent_name_167
+parent_name,UNM HEALTH SYSTEM,parent_name_168
+parent_name,PIEDMONT HEALTHCARE,parent_name_169
+parent_name,JOHN MUIR HEALTH,parent_name_170
+parent_name,BILLINGS CLINIC,parent_name_171
+parent_name,UNIVERSITY OF MARYLAND MEDICAL SYSTEM,parent_name_172
+parent_name,TRINITY HEALTH,parent_name_173
+parent_name,BROOME ONCOLOGY LLC,parent_name_174
+parent_name,HIGHLANDS ONCOLOGY GROUP PA,parent_name_175
+parent_name,UAB HEALTH SYSTEM,parent_name_176
+parent_name,UNIVERSITY HOSPITALS,parent_name_177
+parent_name,PRISMA HEALTH,parent_name_178
+parent_name,ONCOLOGY CONSULTANTS P. A..,parent_name_179
+parent_name,HOSPITAL SISTERS HEALTH SYSTEM,parent_name_180
+parent_name,NORTHEAST GEORGIA HEALTH SYSTEM INC,parent_name_181
+parent_name,MONTEFIORE HEALTH SYSTEM,parent_name_182
+parent_name,TENNESSEE CANCER SPECIALISTS PLLC,parent_name_183
+parent_name,NOVANT HEALTH,parent_name_184
+parent_name,ORLANDO HEALTH,parent_name_185
+parent_name,UNIVERSITY OF NEBRASKA CENTRAL ADMINISTRATION SYSTEM OFFICE,parent_name_186
+parent_name,REGIONAL CANCER CARE ASSOCIATES LLC,parent_name_187
+parent_name,MEDICAL ONCOLOGY HEMATOLOGY CONSULTANTS PA,parent_name_188
+parent_name,COOK CHILDRENS HEALTH FOUNDATION,parent_name_189
+parent_name,KAMALESH K SANKHALA MD INC,parent_name_190
+parent_name,COMPREHENSIVE CANCER CENTERS ,parent_name_191
+parent_name,AMERIPHARMA,parent_name_192
+parent_name,UNIVERSITY OF VIRGINIA MAIN CAMPUS,parent_name_193
+parent_name,SHENANDOAH ONCOLOGY PC,parent_name_194
+parent_name,DEACONESS HEALTH SYSTEM INC,parent_name_195
+parent_name,SOUTHERN ONCOLOGY HEMATOLOGY ASSOC,parent_name_196
+parent_name,WEST VIRGINIA UNIVERSITY,parent_name_197
+parent_name,OKLAHOMA CANCER SPECIALISTS AND RESEARCH INSTITUTE LLC,parent_name_198
+parent_name,LEHIGH VALLEY HEALTH NETWORK,parent_name_199
+parent_name,JACKSON COUNTY,parent_name_200
+parent_name,UNITED HEALTH SERVICES INC,parent_name_201
+parent_name,CARL J. MINNITI MD PA,parent_name_202
+parent_name,NYU LANGONE HEALTH,parent_name_203
+parent_name,SOUTH CAROLINA ONCOLOGY ASSOC PA,parent_name_204
+parent_name,HACKENSACK MERIDIAN HEALTH,parent_name_205
+parent_name,CINCINNATI CHILDREN'S HOSPITAL MEDICAL CENTER,parent_name_206
+parent_name,UNIVERSITY OF ROCHESTER MEDICINE,parent_name_207
+parent_name,ASCENSION,parent_name_208
+parent_name,GOOD SHEPHERD HEALTH CARE SYSTEM,parent_name_209
+parent_name,CANCER AND HEMATOLOGY CENTERS OF WESTERN MICHIGAN PC,parent_name_210
+parent_name,UNIVERSITY OF WASHINGTON,parent_name_211
+parent_name,KERN COUNTY,parent_name_212
+parent_name,PENNSYLVANIA CANCER SPECIALISTS & RESEARCH INSTITUTE,parent_name_213
+parent_name,PREMIER HEALTH,parent_name_214
+parent_name,COMPASS ONCOLOGY,parent_name_215
+parent_name,MOUNTAIN HEALTH NETWORK INC,parent_name_216
+parent_name,OREGON HEALTH & SCIENCE UNIVERSITY,parent_name_217
+parent_name,CENTRAL MAINE HEALTHCARE,parent_name_218
+parent_name,ADVENTIST HEALTH WEST,parent_name_219
+parent_name,ROMAN CATHOLIC DIOCESE OF METUCHEN,parent_name_220
+parent_name,ASANTE,parent_name_221
+parent_name,IRONWOOD PHYSICIANS PC,parent_name_222
+parent_name,LOGAN HEALTH,parent_name_223
+parent_name,EPIC CARE,parent_name_224
+parent_name,Global Reach Health Clinic,parent_name_225
+parent_name,JACKSON HEALTH,parent_name_226
+parent_name,TENNESSEE ONCOLOGY PLLC,parent_name_227
+parent_name,LIGA PUERTORRIQUENA CONTRA EL CANCER,parent_name_228
+parent_name,ONCOLOGY & HEMATOLOGY SPECIALISTSP.A.,parent_name_229
+parent_name,ST JOSEPHS HEALTH SYSTEM,parent_name_230
+parent_name,TAMPA GENERAL,parent_name_231
+parent_name,COOK COUNTY HEALTH AND HOSPITALS SYSTEM,parent_name_232
+parent_name,CITY OF GULFPORT,parent_name_233
+parent_name,TEXAS HEALTH RESOURCES,parent_name_234

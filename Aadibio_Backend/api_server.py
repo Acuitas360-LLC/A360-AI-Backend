@@ -12,7 +12,6 @@ import random
 import threading
 import logging
 import time
-from contextvars import ContextVar
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from importlib import import_module
@@ -37,23 +36,12 @@ from plotly.utils import PlotlyJSONEncoder
 
 # Support legacy absolute imports used across backend modules.
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
-BACKEND_ROOT_DIR = os.path.dirname(BACKEND_DIR)
-PROJECT_ROOT_DIR = os.path.dirname(BACKEND_ROOT_DIR)
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
-if BACKEND_ROOT_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT_DIR)
 # Legacy modules use relative file paths (e.g., payload_store3.json),
 # so pin process cwd to backend directory for consistent resolution.
 os.chdir(BACKEND_DIR)
-load_dotenv(os.path.join(PROJECT_ROOT_DIR, ".env"))
-
-from tenant_settings import (
-    ALLOWED_TENANTS,
-    GENERIC_ENV_NAMES,
-    get_tenant_settings,
-    tenant_env_name,
-)
+load_dotenv(os.path.join(BACKEND_DIR, ".env"))
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
@@ -119,113 +107,10 @@ class SuggestionItem(BaseModel):
     score: float
 
 
-_current_tenant: ContextVar[str] = ContextVar("current_tenant", default="geron")
-_tenant_import_lock = threading.Lock()
-_tenant_checkpointers: dict[str, Any] = {}
-_tenant_chatbots: dict[str, Any] = {}
-_tenant_stream_subgraphs: dict[str, Any] = {}
-_tenant_imported_modules: dict[str, dict[str, Any]] = {}
-
-
-def _normalize_tenant(value: Optional[str]) -> Optional[str]:
-    normalized = str(value or "").strip().lower()
-    return normalized if normalized in ALLOWED_TENANTS else None
-
-
-def _get_current_tenant() -> str:
-    return _normalize_tenant(_current_tenant.get()) or "geron"
-
-
-def _set_current_tenant(tenant: str) -> None:
-    _current_tenant.set(tenant)
-
-
-def _get_default_daily_pulse_questions() -> tuple[str, ...]:
-    return get_tenant_settings(_get_current_tenant()).daily_pulse_defaults
-
-
-def _resolve_request_tenant(raw_request: Request) -> str:
-    header_tenant = _normalize_tenant(raw_request.headers.get("X-App"))
-    if header_tenant:
-        return header_tenant
-
-    path = raw_request.url.path or ""
-    parts = [segment for segment in path.split("/") if segment]
-    if parts:
-        path_tenant = _normalize_tenant(parts[0])
-        if path_tenant:
-            return path_tenant
-
-    raise HTTPException(
-        status_code=400,
-        detail={
-            "code": "invalid_tenant",
-            "message": "Missing or invalid tenant. Provide X-App or use a tenant-prefixed route.",
-            "allowed_tenants": list(ALLOWED_TENANTS),
-        },
-    )
-
-
-def _apply_tenant_env(tenant: str) -> dict[str, Optional[str]]:
-    previous_values: dict[str, Optional[str]] = {}
-    settings = get_tenant_settings(tenant)
-
-    for generic_name in GENERIC_ENV_NAMES:
-        previous_values[generic_name] = os.environ.get(generic_name)
-
-        if generic_name == "PPT_TEMPLATE_PATH":
-            tenant_value = os.environ.get(settings.ppt_template_env)
-        elif generic_name == "PPT_LOGO_PATH":
-            tenant_value = os.environ.get(settings.ppt_logo_env)
-        else:
-            tenant_value = os.environ.get(tenant_env_name(tenant, generic_name))
-
-        if tenant_value is None:
-            os.environ.pop(generic_name, None)
-        else:
-            os.environ[generic_name] = tenant_value
-
-    return previous_values
-
-
-def _restore_tenant_env(previous_values: dict[str, Optional[str]]) -> None:
-    for key, value in previous_values.items():
-        if value is None:
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = value
-
-
-def _import_tenant_module(tenant: str, module_kind: str) -> Any:
-    imported_modules = _tenant_imported_modules.setdefault(tenant, {})
-    cached = imported_modules.get(module_kind)
-    if cached is not None:
-        return cached
-
-    settings = get_tenant_settings(tenant)
-    module_name = {
-        "chatbot": settings.chatbot_module,
-        "subgraph": settings.subgraph_module,
-        "deck": settings.deck_module,
-    }[module_kind]
-
-    with _tenant_import_lock:
-        cached = imported_modules.get(module_kind)
-        if cached is not None:
-            return cached
-
-        backend_path = str(settings.backend_dir)
-        if backend_path not in sys.path:
-            sys.path.insert(0, backend_path)
-
-        previous_env = _apply_tenant_env(tenant)
-        try:
-            module = import_module(module_name)
-        finally:
-            _restore_tenant_env(previous_env)
-
-        imported_modules[module_kind] = module
-        return module
+DEFAULT_DAILY_PULSE_QUESTIONS: tuple[str, ...] = (
+    "Give me the total number of enrollments.",
+    "Give me the total number of dispenses.",   
+)
 
 FEEDBACK_ENRICHMENT_MAX_CHARS = 200000
 MAX_FEEDBACK_ENRICH_RETRIES = 5
@@ -233,30 +118,6 @@ FEEDBACK_ENRICH_RETRY_DELAYS_SEC = (5, 15, 30, 60, 120)
 
 
 app = FastAPI(title="A360 Backend API", version="0.1.0")
-
-
-@app.middleware("http")
-async def _tenant_context_middleware(raw_request: Request, call_next):
-    path = raw_request.scope.get("path", "") or ""
-    try:
-        tenant = _resolve_request_tenant(raw_request)
-    except HTTPException as exc:
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-    parts = [segment for segment in path.split("/") if segment]
-    if parts and parts[0] in ALLOWED_TENANTS:
-        stripped_path = "/" + "/".join(parts[1:])
-        raw_request.scope["path"] = stripped_path or "/"
-        raw_request.scope["raw_path"] = (stripped_path or "/").encode("utf-8")
-
-    raw_request.state.tenant = tenant
-    token = _current_tenant.set(tenant)
-    try:
-        response = await call_next(raw_request)
-    finally:
-        _current_tenant.reset(token)
-
-    response.headers["X-App"] = tenant
-    return response
 
 
 DB_WARMUP_ON_STARTUP = os.getenv("DB_WARMUP_ON_STARTUP", "0").strip().lower() in {
@@ -329,8 +190,11 @@ async def _database_unavailable_handler(
         },
     )
 
+# Optional testing fallback only. Keep empty in production.
+TEST_DB_URI_FALLBACK = os.getenv("TEST_DB_URI_FALLBACK", "").strip()
+
+
 def _build_db_uri() -> str:
-    test_db_uri_fallback = os.getenv("TEST_DB_URI_FALLBACK", "").strip()
     env_uri = (
         os.getenv("DB_URI", "").strip()
         or os.getenv("POSTGRES_URL", "").strip()
@@ -366,22 +230,22 @@ def _build_db_uri() -> str:
     if host and user and password:
         return f"postgresql://{user}:{password}@{host}:{port}/{database}"
 
-    if test_db_uri_fallback and _env_flag("ALLOW_TEST_DB_FALLBACK", False):
-        return test_db_uri_fallback
+    logger.info(
+        "feedback-enrich pending user=%s thread=%s message=%s attempt=%s",
+        user_id,
+        request.thread_id,
+        request.message_id,
+        attempt_number,
+    )
+
+    if TEST_DB_URI_FALLBACK and _env_flag("ALLOW_TEST_DB_FALLBACK", False):
+        return TEST_DB_URI_FALLBACK
 
     raise RuntimeError("PostgreSQL connection is not configured in .env")
 
 
+DB_URI = _build_db_uri()
 logger = logging.getLogger(__name__)
-
-
-def _build_db_uri_for_tenant(tenant: Optional[str] = None) -> str:
-    resolved_tenant = _normalize_tenant(tenant) or _get_current_tenant()
-    previous_env = _apply_tenant_env(resolved_tenant)
-    try:
-        return _build_db_uri()
-    finally:
-        _restore_tenant_env(previous_env)
 
 
 def _configure_logging() -> None:
@@ -920,17 +784,17 @@ def _init_feedback_db(conn: psycopg.Connection) -> None:
     conn.commit()
 
 
-_tenant_db_pools: dict[str, ConnectionPool] = {}
-_tenant_checkpointer_conns: dict[str, psycopg.Connection] = {}
-_tenant_db_unavailable_until: dict[str, datetime] = {}
-_tenant_db_ready: dict[str, bool] = {}
-_tenant_db_last_error: dict[str, str] = {}
-_tenant_db_last_success_at: dict[str, str] = {}
-_tenant_db_retry_attempts: dict[str, int] = {}
-_tenant_db_retry_tasks: dict[str, asyncio.Task[Any]] = {}
-_tenant_db_retry_running: set[str] = set()
+db_pool: Optional[ConnectionPool] = None
+checkpointer_conn: Optional[psycopg.Connection] = None
+db_unavailable_until: Optional[datetime] = None
+db_ready = False
+db_last_error: Optional[str] = None
+db_last_success_at: Optional[str] = None
+db_retry_attempts = 0
+db_retry_task: Optional[asyncio.Task[Any]] = None
+db_retry_task_running = False
 
-_ENSURED_TABLES: dict[str, set[str]] = {}
+_ENSURED_TABLES: set[str] = set()
 _ENSURE_TABLES_LOCK = threading.Lock()
 
 
@@ -943,23 +807,20 @@ def _log_db_event(event: str, level: int = logging.INFO, **fields: Any) -> None:
     logger.log(level, " ".join(parts))
 
 
-def _db_state_tenant(tenant: Optional[str] = None) -> str:
-    return _normalize_tenant(tenant) or _get_current_tenant()
+def _mark_db_ready_state(ready: bool, error: Optional[str] = None) -> None:
+    global db_ready
+    global db_last_error
+    global db_last_success_at
 
+    if db_ready != ready:
+        _log_db_event("db.ready_state_changed", ready=ready, error=error)
 
-def _mark_db_ready_state(ready: bool, error: Optional[str] = None, tenant: Optional[str] = None) -> None:
-    tenant_key = _db_state_tenant(tenant)
-    previous_ready = _tenant_db_ready.get(tenant_key, False)
-
-    if previous_ready != ready:
-        _log_db_event("db.ready_state_changed", tenant=tenant_key, ready=ready, error=error)
-
-    _tenant_db_ready[tenant_key] = ready
+    db_ready = ready
     if ready:
-        _tenant_db_last_error.pop(tenant_key, None)
-        _tenant_db_last_success_at[tenant_key] = datetime.now(UTC).isoformat()
+        db_last_error = None
+        db_last_success_at = datetime.now(UTC).isoformat()
     elif error:
-        _tenant_db_last_error[tenant_key] = error
+        db_last_error = error
 
 
 def _extract_missing_relation(exc: Exception) -> Optional[str]:
@@ -1082,13 +943,10 @@ def _table_ensure_statements(table_name: str) -> list[str]:
 
 
 def _ensure_table_if_needed(table_name: str) -> bool:
-    tenant = _db_state_tenant()
-    ensured_tables = _ENSURED_TABLES.setdefault(tenant, set())
-
     if not table_name:
         return False
 
-    if table_name in ensured_tables:
+    if table_name in _ENSURED_TABLES:
         return True
 
     statements = _table_ensure_statements(table_name)
@@ -1096,23 +954,22 @@ def _ensure_table_if_needed(table_name: str) -> bool:
         return False
 
     with _ENSURE_TABLES_LOCK:
-        if table_name in ensured_tables:
+        if table_name in _ENSURED_TABLES:
             return True
 
-        _log_db_event("db.ensure_table_started", tenant=tenant, table=table_name)
+        _log_db_event("db.ensure_table_started", table=table_name)
         try:
             pool = _ensure_db_pool()
             with pool.connection() as conn:
                 for statement in statements:
                     conn.execute(statement)
-            ensured_tables.add(table_name)
-            _log_db_event("db.ensure_table_success", tenant=tenant, table=table_name)
+            _ENSURED_TABLES.add(table_name)
+            _log_db_event("db.ensure_table_success", table=table_name)
             return True
         except Exception as exc:
             _log_db_event(
                 "db.ensure_table_failed",
                 level=logging.WARNING,
-                tenant=tenant,
                 table=table_name,
                 error_class=exc.__class__.__name__,
                 error=str(exc),
@@ -1120,16 +977,14 @@ def _ensure_table_if_needed(table_name: str) -> bool:
             return False
 
 
-def _record_db_failure(exc: Exception, tenant: Optional[str] = None) -> None:
-    tenant = _db_state_tenant(tenant)
-    _tenant_db_unavailable_until[tenant] = (
-        datetime.now(UTC) + timedelta(seconds=DB_UNAVAILABLE_COOLDOWN_SECONDS)
-    )
-    _mark_db_ready_state(False, error=str(exc), tenant=tenant)
+def _record_db_failure(exc: Exception) -> None:
+    global db_unavailable_until
+
+    db_unavailable_until = datetime.now(UTC) + timedelta(seconds=DB_UNAVAILABLE_COOLDOWN_SECONDS)
+    _mark_db_ready_state(False, error=str(exc))
     _log_db_event(
         "db.connection_failure",
         level=logging.WARNING,
-        tenant=tenant,
         error_class=exc.__class__.__name__,
         error=str(exc),
     )
@@ -1137,58 +992,46 @@ def _record_db_failure(exc: Exception, tenant: Optional[str] = None) -> None:
 
 @app.on_event("startup")
 async def _startup_db_warmup() -> None:
-    for tenant in ALLOWED_TENANTS:
-        if tenant in _tenant_db_retry_running:
-            continue
+    global db_retry_task
+    global db_retry_task_running
 
-        _tenant_db_retry_running.add(tenant)
-        _tenant_db_retry_tasks[tenant] = asyncio.create_task(
-            _db_retry_loop(tenant),
-            name=f"db-retry-loop-{tenant}",
-        )
+    if db_retry_task_running:
+        return
 
+    db_retry_task_running = True
+    db_retry_task = asyncio.create_task(_db_retry_loop(), name="db-retry-loop")
     _log_db_event("db.startup_retry_started", warmup_enabled=DB_WARMUP_ON_STARTUP)
-    for tenant in ALLOWED_TENANTS:
-        token = _current_tenant.set(tenant)
-        try:
-            await asyncio.to_thread(initialize_bm25_index)
-        except Exception as exc:
-            logger.warning("BM25 index initialization failed during startup for %s: %s", tenant, exc)
-        finally:
-            _current_tenant.reset(token)
+    try:
+        await asyncio.to_thread(initialize_bm25_index)
+    except Exception as exc:
+        logger.warning("BM25 index initialization failed during startup: %s", exc)
 
 
-async def _db_retry_loop(tenant: str) -> None:
-    tenant_key = _db_state_tenant(tenant)
+async def _db_retry_loop() -> None:
+    global db_retry_attempts
 
     base_delay = 1.0
     max_delay = 30.0
     delay = base_delay
 
     while True:
-        _tenant_db_retry_attempts[tenant_key] = _tenant_db_retry_attempts.get(tenant_key, 0) + 1
-        attempt = _tenant_db_retry_attempts[tenant_key]
-        _log_db_event(
-            "db.startup_retry_attempt",
-            tenant=tenant_key,
-            attempt=attempt,
-            delay_s=round(delay, 2),
-        )
+        db_retry_attempts += 1
+        attempt = db_retry_attempts
+        _log_db_event("db.startup_retry_attempt", attempt=attempt, delay_s=round(delay, 2))
         try:
-            _ensure_db_pool(tenant_key)
-            _mark_db_ready_state(True, tenant=tenant_key)
-            _log_db_event("db.startup_retry_success", tenant=tenant_key, attempt=attempt)
+            _ensure_db_pool()
+            _mark_db_ready_state(True)
+            _log_db_event("db.startup_retry_success", attempt=attempt)
             delay = base_delay
             await asyncio.sleep(60.0)
             continue
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            _record_db_failure(exc, tenant=tenant_key)
+            _record_db_failure(exc)
             _log_db_event(
                 "db.startup_retry_failed",
                 level=logging.WARNING,
-                tenant=tenant_key,
                 attempt=attempt,
                 error_class=exc.__class__.__name__,
                 error=str(exc),
@@ -1201,29 +1044,32 @@ async def _db_retry_loop(tenant: str) -> None:
 
 @app.on_event("shutdown")
 async def _shutdown_db_connections() -> None:
-    for tenant in list(_tenant_db_retry_running):
-        _tenant_db_retry_running.discard(tenant)
+    global db_pool
+    global checkpointer_conn
+    global db_retry_task
+    global db_retry_task_running
 
-    for tenant, task in list(_tenant_db_retry_tasks.items()):
-        task.cancel()
+    db_retry_task_running = False
+    if db_retry_task is not None:
+        db_retry_task.cancel()
         try:
-            await task
+            await db_retry_task
         except asyncio.CancelledError:
             pass
         finally:
-            _tenant_db_retry_tasks.pop(tenant, None)
+            db_retry_task = None
 
-    for tenant, pool in list(_tenant_db_pools.items()):
+    if db_pool is not None:
         try:
-            pool.close()
+            db_pool.close()
         finally:
-            _tenant_db_pools.pop(tenant, None)
+            db_pool = None
 
-    for tenant, conn in list(_tenant_checkpointer_conns.items()):
+    if checkpointer_conn is not None:
         try:
-            conn.close()
+            checkpointer_conn.close()
         finally:
-            _tenant_checkpointer_conns.pop(tenant, None)
+            checkpointer_conn = None
 
 
 def _configure_runtime_connection(conn: psycopg.Connection) -> None:
@@ -1236,16 +1082,16 @@ def _configure_runtime_connection(conn: psycopg.Connection) -> None:
         conn.autocommit = previous_autocommit
 
 
-def _ensure_db_pool(tenant: Optional[str] = None) -> ConnectionPool:
-    tenant_key = _db_state_tenant(tenant)
-    existing_pool = _tenant_db_pools.get(tenant_key)
-    if existing_pool is not None:
-        return existing_pool
+def _ensure_db_pool() -> ConnectionPool:
+    global db_pool
+    global db_unavailable_until
+
+    if db_pool is not None:
+        return db_pool
 
     try:
-        db_uri = _build_db_uri_for_tenant(tenant_key)
         pool = ConnectionPool(
-            conninfo=db_uri,
+            conninfo=DB_URI,
             min_size=max(1, int(os.getenv("DB_POOL_MIN_SIZE", "1"))),
             max_size=max(1, int(os.getenv("DB_POOL_MAX_SIZE", "10"))),
             timeout=DB_CONNECT_TIMEOUT,
@@ -1264,47 +1110,45 @@ def _ensure_db_pool(tenant: Optional[str] = None) -> ConnectionPool:
             finally:
                 conn.autocommit = previous_autocommit
             _init_feedback_db(conn)
-        _tenant_db_pools[tenant_key] = pool
-        _tenant_db_unavailable_until.pop(tenant_key, None)
+        db_pool = pool
+        db_unavailable_until = None
         return pool
     except Exception as exc:
-        _record_db_failure(exc, tenant=tenant_key)
+        _record_db_failure(exc)
         raise
 
 
-def _ensure_checkpointer_connection(tenant: Optional[str] = None) -> psycopg.Connection:
-    tenant_key = _db_state_tenant(tenant)
-    existing_conn = _tenant_checkpointer_conns.get(tenant_key)
-    if existing_conn is not None:
-        return existing_conn
+def _ensure_checkpointer_connection() -> psycopg.Connection:
+    global checkpointer_conn
+
+    if checkpointer_conn is not None:
+        return checkpointer_conn
 
     checkpointer_conn = psycopg.connect(
-        _build_db_uri_for_tenant(tenant_key),
+        DB_URI,
         autocommit=False,
         connect_timeout=DB_CONNECT_TIMEOUT,
     )
     checkpointer_conn.execute(f"SET statement_timeout = {DB_STATEMENT_TIMEOUT_MS}")
     checkpointer_conn.commit()
-    _tenant_checkpointer_conns[tenant_key] = checkpointer_conn
     return checkpointer_conn
 
 
 def _db_fetchall(query: str, params: Optional[tuple[Any, ...]] = None) -> list[Any]:
-    tenant = _db_state_tenant()
+    global db_unavailable_until
 
     now = datetime.now(UTC)
-    unavailable_until = _tenant_db_unavailable_until.get(tenant)
-    if unavailable_until and now < unavailable_until:
+    if db_unavailable_until and now < db_unavailable_until:
         raise DatabaseUnavailableError("PostgreSQL connection is unavailable")
 
     ensured_missing_table = False
     for attempt in (1, 2):
         try:
-            pool = _ensure_db_pool(tenant)
+            pool = _ensure_db_pool()
             with pool.connection() as conn:
-                _tenant_db_unavailable_until.pop(tenant, None)
+                db_unavailable_until = None
                 cursor = conn.execute(query, params) if params is not None else conn.execute(query)
-                _mark_db_ready_state(True, tenant=tenant)
+                _mark_db_ready_state(True)
                 return cursor.fetchall()
         except psycopg.errors.UndefinedTable as exc:
             table_name = _extract_missing_relation(exc)
@@ -1329,28 +1173,27 @@ def _db_fetchall(query: str, params: Optional[tuple[Any, ...]] = None) -> list[A
         except (PoolTimeout, psycopg.OperationalError, psycopg.InterfaceError, psycopg.errors.ConnectionTimeout) as exc:
             if attempt == 1:
                 continue
-            _record_db_failure(exc, tenant=tenant)
+            _record_db_failure(exc)
             raise DatabaseUnavailableError("PostgreSQL connection is unavailable") from exc
 
     raise DatabaseUnavailableError("PostgreSQL query execution failed")
 
 
 def _db_fetchone(query: str, params: Optional[tuple[Any, ...]] = None) -> Any:
-    tenant = _db_state_tenant()
+    global db_unavailable_until
 
     now = datetime.now(UTC)
-    unavailable_until = _tenant_db_unavailable_until.get(tenant)
-    if unavailable_until and now < unavailable_until:
+    if db_unavailable_until and now < db_unavailable_until:
         raise DatabaseUnavailableError("PostgreSQL connection is unavailable")
 
     ensured_missing_table = False
     for attempt in (1, 2):
         try:
-            pool = _ensure_db_pool(tenant)
+            pool = _ensure_db_pool()
             with pool.connection() as conn:
-                _tenant_db_unavailable_until.pop(tenant, None)
+                db_unavailable_until = None
                 cursor = conn.execute(query, params) if params is not None else conn.execute(query)
-                _mark_db_ready_state(True, tenant=tenant)
+                _mark_db_ready_state(True)
                 return cursor.fetchone()
         except psycopg.errors.UndefinedTable as exc:
             table_name = _extract_missing_relation(exc)
@@ -1375,31 +1218,30 @@ def _db_fetchone(query: str, params: Optional[tuple[Any, ...]] = None) -> Any:
         except (PoolTimeout, psycopg.OperationalError, psycopg.InterfaceError, psycopg.errors.ConnectionTimeout) as exc:
             if attempt == 1:
                 continue
-            _record_db_failure(exc, tenant=tenant)
+            _record_db_failure(exc)
             raise DatabaseUnavailableError("PostgreSQL connection is unavailable") from exc
 
     raise DatabaseUnavailableError("PostgreSQL query execution failed")
 
 
 def _db_execute(query: str, params: Optional[tuple[Any, ...]] = None) -> None:
-    tenant = _db_state_tenant()
+    global db_unavailable_until
 
     now = datetime.now(UTC)
-    unavailable_until = _tenant_db_unavailable_until.get(tenant)
-    if unavailable_until and now < unavailable_until:
+    if db_unavailable_until and now < db_unavailable_until:
         raise DatabaseUnavailableError("PostgreSQL connection is unavailable")
 
     ensured_missing_table = False
     for attempt in (1, 2):
         try:
-            pool = _ensure_db_pool(tenant)
+            pool = _ensure_db_pool()
             with pool.connection() as conn:
-                _tenant_db_unavailable_until.pop(tenant, None)
+                db_unavailable_until = None
                 if params is None:
                     conn.execute(query)
                 else:
                     conn.execute(query, params)
-                _mark_db_ready_state(True, tenant=tenant)
+                _mark_db_ready_state(True)
                 return
         except psycopg.errors.UndefinedTable as exc:
             table_name = _extract_missing_relation(exc)
@@ -1424,33 +1266,31 @@ def _db_execute(query: str, params: Optional[tuple[Any, ...]] = None) -> None:
         except (PoolTimeout, psycopg.OperationalError, psycopg.InterfaceError, psycopg.errors.ConnectionTimeout) as exc:
             if attempt == 1:
                 continue
-            _record_db_failure(exc, tenant=tenant)
+            _record_db_failure(exc)
             raise DatabaseUnavailableError("PostgreSQL connection is unavailable") from exc
 
     raise DatabaseUnavailableError("PostgreSQL query execution failed")
 
 
 def _build_checkpointer() -> Any:
-    tenant = _get_current_tenant()
-    previous_env = _apply_tenant_env(tenant)
     try:
         if PostgresSaver is None:
             return MemorySaver()
-        checkpointer_instance = PostgresSaver(_ensure_checkpointer_connection(tenant))
+        checkpointer_instance = PostgresSaver(_ensure_checkpointer_connection())
         checkpointer_instance.setup()
         return checkpointer_instance
     except Exception:
         # Fallback keeps development unblocked if postgres saver is unavailable.
         return MemorySaver()
-    finally:
-        _restore_tenant_env(previous_env)
+
+
+checkpointer = None
+chatbot = None
+stream_subgraph = None
 
 
 def _build_rag_examples_for_question(question: str) -> tuple[str, str, list[str], str]:
-    chatbot_module = _import_tenant_module(_get_current_tenant(), "chatbot")
-    build_rag_examples = chatbot_module.build_rag_examples
-    get_intent_summary = chatbot_module.get_intent_summary
-    process_user_query = chatbot_module.process_user_query
+    from chatbot_Aadibio import build_rag_examples, get_intent_summary, process_user_query
 
     corrected_question = process_user_query(question)
     if not isinstance(corrected_question, str) or not corrected_question.strip():
@@ -1482,11 +1322,11 @@ def _normalize_suggestion_text(text: str) -> str:
 
 SUGGESTION_CACHE_TTL_SECONDS = int(os.getenv("SUGGESTION_CACHE_TTL_SECONDS", "120"))
 SUGGESTION_CACHE_MAX_ITEMS = int(os.getenv("SUGGESTION_CACHE_MAX_ITEMS", "200"))
-_suggestion_cache: dict[str, "OrderedDict[str, tuple[float, list[SuggestionItem]]]"] = {}
+_suggestion_cache: "OrderedDict[str, tuple[float, list[SuggestionItem]]]" = OrderedDict()
 _suggestion_cache_lock = threading.Lock()
-_bm25_index: dict[str, Optional[BM25Okapi]] = {}
-_bm25_questions: dict[str, list[str]] = {}
-_bm25_question_tokens: dict[str, list[list[str]]] = {}
+_bm25_index: Optional[BM25Okapi] = None
+_bm25_questions: list[str] = []
+_bm25_question_tokens: list[list[str]] = []
 _bm25_lock = threading.Lock()
 
 
@@ -1506,14 +1346,14 @@ def _tokenize_prefix(text: str) -> list[str]:
 
 
 def initialize_bm25_index() -> None:
-    tenant = _get_current_tenant()
+    global _bm25_index
+    global _bm25_questions
 
     with _bm25_lock:
-        if _bm25_index.get(tenant) is not None:
+        if _bm25_index is not None:
             return
 
-    chatbot_module = _import_tenant_module(tenant, "chatbot")
-    run_snowflake_query = chatbot_module.run_snowflake_query
+    from chatbot_Aadibio import run_snowflake_query
 
     logger.info("BM25 index initialization started")
     try:
@@ -1533,49 +1373,44 @@ def initialize_bm25_index() -> None:
     tokenized = [_tokenize_bm25(question) for question in questions]
     question_tokens = [_tokenize_prefix(question) for question in questions]
     with _bm25_lock:
-        _bm25_questions[tenant] = questions
-        _bm25_question_tokens[tenant] = question_tokens
-        _bm25_index[tenant] = BM25Okapi(tokenized) if questions else None
-        logger.info("BM25 index initialized tenant=%s (questions=%d)", tenant, len(questions))
+        _bm25_questions = questions
+        _bm25_question_tokens = question_tokens
+        _bm25_index = BM25Okapi(tokenized) if questions else None
+        logger.info("BM25 index initialized (questions=%d)", len(_bm25_questions))
 
 
 def _get_cached_suggestions(query: str) -> Optional[list[SuggestionItem]]:
-    tenant = _get_current_tenant()
     key = _suggestion_cache_key(query)
     now = time.time()
     with _suggestion_cache_lock:
-        tenant_cache = _suggestion_cache.setdefault(tenant, OrderedDict())
-        entry = tenant_cache.get(key)
+        entry = _suggestion_cache.get(key)
         if not entry:
             return None
         created_at, items = entry
         if now - created_at > SUGGESTION_CACHE_TTL_SECONDS:
-            tenant_cache.pop(key, None)
+            _suggestion_cache.pop(key, None)
             return None
-        tenant_cache.move_to_end(key)
+        _suggestion_cache.move_to_end(key)
         return items
 
 
 def _set_cached_suggestions(query: str, items: list[SuggestionItem]) -> None:
-    tenant = _get_current_tenant()
     key = _suggestion_cache_key(query)
     with _suggestion_cache_lock:
-        tenant_cache = _suggestion_cache.setdefault(tenant, OrderedDict())
-        tenant_cache[key] = (time.time(), items)
-        tenant_cache.move_to_end(key)
-        while len(tenant_cache) > SUGGESTION_CACHE_MAX_ITEMS:
-            tenant_cache.popitem(last=False)
+        _suggestion_cache[key] = (time.time(), items)
+        _suggestion_cache.move_to_end(key)
+        while len(_suggestion_cache) > SUGGESTION_CACHE_MAX_ITEMS:
+            _suggestion_cache.popitem(last=False)
 
 
 def _prefix_search_local(query: str, limit: int = 5) -> list[dict[str, Any]]:
-    tenant = _get_current_tenant()
     query_tokens = [token for token in _tokenize_prefix(query) if len(token) >= 2]
     if not query_tokens:
         return []
 
     with _bm25_lock:
-        questions = list(_bm25_questions.get(tenant, []))
-        question_tokens = list(_bm25_question_tokens.get(tenant, []))
+        questions = list(_bm25_questions)
+        question_tokens = list(_bm25_question_tokens)
 
     if not questions or not question_tokens:
         return []
@@ -1601,14 +1436,13 @@ def _prefix_search_local(query: str, limit: int = 5) -> list[dict[str, Any]]:
 
 
 def _bm25_search(query: str, limit: int = 5) -> list[dict[str, Any]]:
-    tenant = _get_current_tenant()
     tokens = _tokenize_bm25(query)
     if not tokens:
         return []
 
     with _bm25_lock:
-        index = _bm25_index.get(tenant)
-        questions = list(_bm25_questions.get(tenant, []))
+        index = _bm25_index
+        questions = list(_bm25_questions)
 
     if index is None or not questions:
         return []
@@ -1681,35 +1515,23 @@ def _merge_suggestions(
 
 
 def _get_chatbot() -> Any:
-    tenant = _get_current_tenant()
-    chatbot = _tenant_chatbots.get(tenant)
+    global checkpointer
+    global chatbot
     if chatbot is None:
-        checkpointer = _tenant_checkpointers.get(tenant)
         if checkpointer is None:
             checkpointer = _build_checkpointer()
-            _tenant_checkpointers[tenant] = checkpointer
+        from chatbot_Aadibio import build_chatbot
 
-        chatbot_module = _import_tenant_module(tenant, "chatbot")
-        previous_env = _apply_tenant_env(tenant)
-        try:
-            chatbot = chatbot_module.build_chatbot(checkpointer=checkpointer)
-        finally:
-            _restore_tenant_env(previous_env)
-        _tenant_chatbots[tenant] = chatbot
+        chatbot = build_chatbot(checkpointer=checkpointer)
     return chatbot
 
 
 def _get_stream_subgraph() -> Any:
-    tenant = _get_current_tenant()
-    stream_subgraph = _tenant_stream_subgraphs.get(tenant)
+    global stream_subgraph
     if stream_subgraph is None:
-        subgraph_module = _import_tenant_module(tenant, "subgraph")
-        previous_env = _apply_tenant_env(tenant)
-        try:
-            stream_subgraph = subgraph_module.build_graph(checkpointer=None)
-        finally:
-            _restore_tenant_env(previous_env)
-        _tenant_stream_subgraphs[tenant] = stream_subgraph
+        from subgraph_Aadibio import build_graph as build_stream_graph
+
+        stream_subgraph = build_stream_graph(checkpointer=None)
     return stream_subgraph
 
 
@@ -3438,10 +3260,11 @@ def _resolve_asset_path(path: str) -> str:
     if os.path.isabs(candidate):
         return candidate if os.path.exists(candidate) else ""
 
+    project_root_dir = os.path.dirname(os.path.dirname(BACKEND_DIR))
     search_roots = (
         BACKEND_DIR,
-        BACKEND_ROOT_DIR,
-        PROJECT_ROOT_DIR,
+        os.path.dirname(BACKEND_DIR),
+        project_root_dir,
     )
     for root in search_roots:
         resolved = os.path.abspath(os.path.join(root, candidate))
@@ -3456,9 +3279,7 @@ def _generate_ppt_file(
     chart_path_overrides: Optional[list[Optional[str]]] = None,
     cancel_check: Optional[Callable[[], None]] = None,
 ) -> str:
-    tenant = _get_current_tenant()
-    deck_module = _import_tenant_module(tenant, "deck")
-    build_ppt = deck_module.build_ppt
+    from deck_creator_agent_Aadibio import build_ppt
 
     template_path = _resolve_asset_path(os.getenv("PPT_TEMPLATE_PATH", ""))
     logo_path = _resolve_asset_path(os.getenv("PPT_LOGO_PATH", ""))
@@ -3477,14 +3298,11 @@ def _generate_ppt_file(
         f"messages={len(messages)} output={output_path} "
         f"template={template_path} logo={logo_path}"
     )
-    previous_env = _apply_tenant_env(tenant)
     try:
         result = build_ppt(messages, **kwargs)
     except Exception:
         print(f"[PPT] api: generate error output={output_path}")
         raise
-    finally:
-        _restore_tenant_env(previous_env)
 
     print(f"[PPT] api: generate done output={output_path}")
     return result
@@ -3508,22 +3326,15 @@ def _build_preview_payload(
     chart_path_overrides: Optional[list[Optional[str]]] = None,
     cancel_check: Optional[Callable[[], None]] = None,
 ) -> list[dict[str, Any]]:
-    tenant = _get_current_tenant()
-    deck_module = _import_tenant_module(tenant, "deck")
-    build_slide_data = deck_module.build_slide_data
-    parse_conversation = deck_module.parse_conversation
+    from deck_creator_agent_Aadibio import build_slide_data, parse_conversation
 
     print(f"[PPT] preview: build start messages={len(messages)}")
-    previous_env = _apply_tenant_env(tenant)
-    try:
-        blocks = parse_conversation(messages)
-        slides = build_slide_data(
-            messages,
-            chart_path_overrides=chart_path_overrides,
-            cancel_check=cancel_check,
-        )
-    finally:
-        _restore_tenant_env(previous_env)
+    blocks = parse_conversation(messages)
+    slides = build_slide_data(
+        messages,
+        chart_path_overrides=chart_path_overrides,
+        cancel_check=cancel_check,
+    )
     payload: list[dict[str, Any]] = []
     for index, slide in enumerate(slides):
         if cancel_check:
@@ -3560,15 +3371,13 @@ def _build_preview_payload(
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    tenant = _get_current_tenant()
     return {
         "status": "ok",
-        "tenant": tenant,
         "db": {
-            "ready": _tenant_db_ready.get(tenant, False),
-            "retryAttempts": _tenant_db_retry_attempts.get(tenant, 0),
-            "lastError": _tenant_db_last_error.get(tenant),
-            "lastSuccessAt": _tenant_db_last_success_at.get(tenant),
+            "ready": db_ready,
+            "retryAttempts": db_retry_attempts,
+            "lastError": db_last_error,
+            "lastSuccessAt": db_last_success_at,
         },
     }
 
@@ -3596,7 +3405,7 @@ def get_daily_pulse_questions(raw_request: Request) -> dict[str, Any]:
 
                 if not questions:
                     now_iso = datetime.now(UTC).isoformat()
-                    for index, question in enumerate(_get_default_daily_pulse_questions()):
+                    for index, question in enumerate(DEFAULT_DAILY_PULSE_QUESTIONS):
                         conn.execute(
                             """
                             INSERT INTO daily_pulse_questions (
@@ -3610,7 +3419,7 @@ def get_daily_pulse_questions(raw_request: Request) -> dict[str, Any]:
                             """,
                             (current_user_id, question, index, now_iso, now_iso),
                         )
-                    questions = list(_get_default_daily_pulse_questions())
+                    questions = list(DEFAULT_DAILY_PULSE_QUESTIONS)
                 return {"questions": questions, "count": len(questions)}
         except psycopg.errors.UndefinedTable as exc:
             if attempt == 1 and _ensure_table_if_needed("daily_pulse_questions"):

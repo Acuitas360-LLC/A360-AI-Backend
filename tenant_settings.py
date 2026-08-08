@@ -52,6 +52,21 @@ TENANT_SETTINGS: dict[str, TenantSettings] = {
             "Give me the total number of dispenses.",
         ),
     ),
+    "aadibio": TenantSettings(
+        tenant_id="aadibio",
+        path_prefix="/aadibio",
+        env_prefix="AADIBIO",
+        backend_dir=BACKEND_ROOT / "Aadibio_Backend",
+        chatbot_module="chatbot_Aadibio",
+        subgraph_module="subgraph_Aadibio",
+        deck_module="deck_creator_agent_Aadibio",
+        ppt_template_env="AADIBIO_PPT_TEMPLATE_PATH",
+        ppt_logo_env="AADIBIO_PPT_LOGO_PATH",
+        daily_pulse_defaults=(
+            "How are sales trending?",
+            "Are we seeing strong short-term sales momentum?",
+        ),
+    ),
 }
 
 ALLOWED_TENANTS = tuple(TENANT_SETTINGS.keys())

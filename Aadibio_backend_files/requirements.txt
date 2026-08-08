@@ -1,0 +1,9 @@
+python-dotenv
+langgraph
+langchain-openai
+openai
+matplotlib
+langgraph-checkpoint-postgres
+psycopg[binary]
+snowflake-connector-python
+faiss-cpu
