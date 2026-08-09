@@ -108,8 +108,8 @@ class SuggestionItem(BaseModel):
 
 
 DEFAULT_DAILY_PULSE_QUESTIONS: tuple[str, ...] = (
-    "Give me the total number of enrollments.",
-    "Give me the total number of dispenses.",   
+    "Give me the top 25 accounts.",
+    "What is the growth of the top 75 accounts?"
 )
 
 FEEDBACK_ENRICHMENT_MAX_CHARS = 200000

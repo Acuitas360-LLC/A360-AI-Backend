@@ -63,8 +63,8 @@ TENANT_SETTINGS: dict[str, TenantSettings] = {
         ppt_template_env="AADIBIO_PPT_TEMPLATE_PATH",
         ppt_logo_env="AADIBIO_PPT_LOGO_PATH",
         daily_pulse_defaults=(
-            "How are sales trending?",
-            "Are we seeing strong short-term sales momentum?",
+            "Give me the top 25 accounts.",
+            "What is the growth of the top 75 accounts?",
         ),
     ),
 }

@@ -19,7 +19,7 @@ If no theme is provided the original dark-navy defaults are used.
 from __future__ import annotations
 import os
 from datetime import date
-from typing import Any
+from typing import Any, Callable
 import plotly.io as pio
 pio.templates.default = "plotly"
 from pptx import Presentation
@@ -27,7 +27,7 @@ from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches, Pt
 from pptx.oxml.ns import qn
-
+from plotly.utils import PlotlyJSONEncoder
 import pandas as pd
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from dotenv import load_dotenv
@@ -48,6 +48,27 @@ from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
 from PIL import Image
 warnings.filterwarnings("ignore")
+
+MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _resolve_local_asset_path(path: str | None) -> str | None:
+    candidate = (path or "").strip()
+    if not candidate:
+        return None
+    if os.path.isabs(candidate):
+        return candidate if os.path.exists(candidate) else None
+
+    search_roots = (
+        MODULE_DIR,
+        os.path.dirname(MODULE_DIR),
+        os.path.dirname(os.path.dirname(MODULE_DIR)),
+    )
+    for root in search_roots:
+        resolved = os.path.abspath(os.path.join(root, candidate))
+        if os.path.exists(resolved):
+            return resolved
+    return None
 
 
 messages=[HumanMessage(content='How are sales trending?', additional_kwargs={}, response_metadata={}, id='8823ba60-6697-49c3-9f96-728e740c1032'), AIMessage(content='SQL Query Executed:\nWITH max_week_end_date_cte AS (\n    SELECT MAX(week_end_date) AS max_week_end_date\n    FROM data_867\n),\nr13w_window_cte AS (\n    SELECT\n        DATEADD(WEEK, -12, max_week_end_date) AS window_start_date,\n        max_week_end_date AS window_end_date\n    FROM max_week_end_date_cte\n),\nweekly_trend_cte AS (\n    SELECT\n        DATEADD(DAY, -6, d.week_end_date) AS week_start_date,\n        d.week_end_date,\n        COUNT(DISTINCT CASE WHEN d.is_business_day = 1 THEN d.date END) AS weekly_business_day_count,\n        SUM(d.relmora_total_mg) AS weekly_sales,\n        CAST(\n            SUM(d.relmora_total_mg) / NULLIF(COUNT(DISTINCT CASE WHEN d.is_business_day = 1 THEN d.date END), 0)\n            AS INTEGER\n        ) AS weekly_daily_average_sales\n    FROM data_867 d\n    JOIN r13w_window_cte w\n      ON d.week_end_date >= w.window_start_date\n     AND d.week_end_date <= w.window_end_date\n    GROUP BY d.week_end_date\n),\ntotal_r13w_cte AS (\n    SELECT\n        SUM(d.relmora_total_mg) AS total_mg_r13w\n    FROM data_867 d\n    JOIN r13w_window_cte w\n      ON d.week_end_date >= w.window_start_date\n     AND d.week_end_date <= w.window_end_date\n)\nSELECT\n    wt.week_start_date,\n    wt.week_end_date,\n    wt.weekly_business_day_count,\n    wt.weekly_sales,\n    wt.weekly_daily_average_sales,\n    tr.total_mg_r13w\nFROM weekly_trend_cte wt\nCROSS JOIN total_r13w_cte tr\nORDER BY wt.week_end_date ASC;\n\nResult Summary:\nThe analysis answers a straightforward business question: how Relmora’s national sales have trended over the most recent 13 weeks of available data, looking at both total weekly volume and the average sold per business day. Over this period, Relmora generated 1,054,069 mg in total national sales, with weekly results generally ranging from about 58,000 mg to 116,000 mg, showing meaningful week-to-week volatility rather than a steady trend. The strongest week was Jan 31–Feb 6 at 116,466 mg, while holiday-affected and shortened weeks were noticeably softer, including Dec 20–26 at 58,045 mg and Feb 14–20 at 67,351 mg.\n\nWhat stands out is that business-day-adjusted performance tells a more balanced story than raw weekly totals alone. Several 4-day weeks still posted relatively strong daily averages, suggesting demand held up better than the lower weekly totals might imply. The latest week, Feb 28–Mar 6, shows only 1 business day and 24,205 mg in sales, which indicates the most recent period is incomplete and should not be compared directly with prior full weeks. Overall, the 13-week view points to a pattern of fluctuating but resilient national demand, with timing effects from shortened weeks materially influencing the headline weekly totals.\n\nRelevant Questions:\n- What is the sales in the recent month?\n- How has our sales performance evolved over the past year?\n- Are we seeing strong short-term sales momentum?\n- How are we doing in terms of adding new businesses?', additional_kwargs={}, response_metadata={}, id='4c1271ba-c619-49e4-b3c0-dd31be76827a', tool_calls=[], invalid_tool_calls=[]), AIMessage(content='SQL query results', additional_kwargs={'type': 'sql_result', 'data': {'columns': ['WEEK_START_DATE', 'WEEK_END_DATE', 'WEEKLY_BUSINESS_DAY_COUNT', 'WEEKLY_SALES', 'WEEKLY_DAILY_AVERAGE_SALES', 'TOTAL_MG_R13W'], 'data': [{'WEEK_START_DATE': datetime.date(2025, 12, 6), 'WEEK_END_DATE': datetime.date(2025, 12, 12), 'WEEKLY_BUSINESS_DAY_COUNT': 5, 'WEEKLY_SALES': 84929, 'WEEKLY_DAILY_AVERAGE_SALES': 16986, 'TOTAL_MG_R13W': 1054069}, {'WEEK_START_DATE': datetime.date(2025, 12, 13), 'WEEK_END_DATE': datetime.date(2025, 12, 19), 'WEEKLY_BUSINESS_DAY_COUNT': 5, 'WEEKLY_SALES': 95833, 'WEEKLY_DAILY_AVERAGE_SALES': 19167, 'TOTAL_MG_R13W': 1054069}, {'WEEK_START_DATE': datetime.date(2025, 12, 20), 'WEEK_END_DATE': datetime.date(2025, 12, 26), 'WEEKLY_BUSINESS_DAY_COUNT': 4, 'WEEKLY_SALES': 58045, 'WEEKLY_DAILY_AVERAGE_SALES': 14511, 'TOTAL_MG_R13W': 1054069}, {'WEEK_START_DATE': datetime.date(2025, 12, 27), 'WEEK_END_DATE': datetime.date(2026, 1, 2), 'WEEKLY_BUSINESS_DAY_COUNT': 4, 'WEEKLY_SALES': 77127, 'WEEKLY_DAILY_AVERAGE_SALES': 19282, 'TOTAL_MG_R13W': 1054069}, {'WEEK_START_DATE': datetime.date(2026, 1, 3), 'WEEK_END_DATE': datetime.date(2026, 1, 9), 'WEEKLY_BUSINESS_DAY_COUNT': 5, 'WEEKLY_SALES': 108805, 'WEEKLY_DAILY_AVERAGE_SALES': 21761, 'TOTAL_MG_R13W': 1054069}, {'WEEK_START_DATE': datetime.date(2026, 1, 10), 'WEEK_END_DATE': datetime.date(2026, 1, 16), 'WEEKLY_BUSINESS_DAY_COUNT': 5, 'WEEKLY_SALES': 90146, 'WEEKLY_DAILY_AVERAGE_SALES': 18029, 'TOTAL_MG_R13W': 1054069}, {'WEEK_START_DATE': datetime.date(2026, 1, 17), 'WEEK_END_DATE': datetime.date(2026, 1, 23), 'WEEKLY_BUSINESS_DAY_COUNT': 4, 'WEEKLY_SALES': 84130, 'WEEKLY_DAILY_AVERAGE_SALES': 21033, 'TOTAL_MG_R13W': 1054069}, {'WEEK_START_DATE': datetime.date(2026, 1, 24), 'WEEK_END_DATE': datetime.date(2026, 1, 30), 'WEEKLY_BUSINESS_DAY_COUNT': 5, 'WEEKLY_SALES': 79383, 'WEEKLY_DAILY_AVERAGE_SALES': 15877, 'TOTAL_MG_R13W': 1054069}, {'WEEK_START_DATE': datetime.date(2026, 1, 31), 'WEEK_END_DATE': datetime.date(2026, 2, 6), 'WEEKLY_BUSINESS_DAY_COUNT': 5, 'WEEKLY_SALES': 116466, 'WEEKLY_DAILY_AVERAGE_SALES': 23293, 'TOTAL_MG_R13W': 1054069}, {'WEEK_START_DATE': datetime.date(2026, 2, 7), 'WEEK_END_DATE': datetime.date(2026, 2, 13), 'WEEKLY_BUSINESS_DAY_COUNT': 5, 'WEEKLY_SALES': 81357, 'WEEKLY_DAILY_AVERAGE_SALES': 16271, 'TOTAL_MG_R13W': 1054069}, {'WEEK_START_DATE': datetime.date(2026, 2, 14), 'WEEK_END_DATE': datetime.date(2026, 2, 20), 'WEEKLY_BUSINESS_DAY_COUNT': 4, 'WEEKLY_SALES': 67351, 'WEEKLY_DAILY_AVERAGE_SALES': 16838, 'TOTAL_MG_R13W': 1054069}, {'WEEK_START_DATE': datetime.date(2026, 2, 21), 'WEEK_END_DATE': datetime.date(2026, 2, 27), 'WEEKLY_BUSINESS_DAY_COUNT': 5, 'WEEKLY_SALES': 86292, 'WEEKLY_DAILY_AVERAGE_SALES': 17258, 'TOTAL_MG_R13W': 1054069}, {'WEEK_START_DATE': datetime.date(2026, 2, 28), 'WEEK_END_DATE': datetime.date(2026, 3, 6), 'WEEKLY_BUSINESS_DAY_COUNT': 1, 'WEEKLY_SALES': 24205, 'WEEKLY_DAILY_AVERAGE_SALES': 24205, 'TOTAL_MG_R13W': 1054069}]}}, response_metadata={}, id='82e56320-9b1d-426c-a824-58e44e5072db', tool_calls=[], invalid_tool_calls=[]), AIMessage(content='Visualization', additional_kwargs={'type': 'visualization', 'code': 'import pandas as pd\nimport plotly.graph_objects as go\nfrom plotly.subplots import make_subplots\n\ndf = df.copy()\ndf["WEEK_END_DATE"] = pd.to_datetime(df["WEEK_END_DATE"])\ndf["WEEK_START_DATE"] = pd.to_datetime(df["WEEK_START_DATE"])\ndf = df.sort_values("WEEK_END_DATE")\n\nx_labels = df["WEEK_END_DATE"].dt.strftime("%Y-%m-%d")\n\nfig = make_subplots(specs=[[{"secondary_y": True}]])\n\nfig.add_trace(\n    go.Bar(\n        x=x_labels,\n        y=df["WEEKLY_SALES"],\n        name="Weekly Sales",\n        marker_color="#4C78A8",\n        opacity=0.85,\n        customdata=list(\n            zip(\n                df["WEEK_START_DATE"].dt.strftime("%Y-%m-%d"),\n                df["WEEK_END_DATE"].dt.strftime("%Y-%m-%d"),\n                df["WEEKLY_BUSINESS_DAY_COUNT"],\n                df["WEEKLY_DAILY_AVERAGE_SALES"]\n            )\n        ),\n        hovertemplate=f"Week Start: %{{customdata[0]}}<br>Week End: %{{customdata[1]}}<br>Weekly Sales: %{{y:,.0f}}<br>Business Days: %{{customdata[2]}}<br>Daily Avg Sales: %{{customdata[3]:,.0f}}<extra></extra>"\n    ),\n    secondary_y=False\n)\n\nfig.add_trace(\n    go.Scatter(\n        x=x_labels,\n        y=df["WEEKLY_DAILY_AVERAGE_SALES"],\n        name="Weekly Daily Avg Sales",\n        mode="lines+markers",\n        line=dict(color="#F58518", width=3),\n        marker=dict(size=8),\n        customdata=list(\n            zip(\n                df["WEEK_START_DATE"].dt.strftime("%Y-%m-%d"),\n                df["WEEK_END_DATE"].dt.strftime("%Y-%m-%d"),\n                df["WEEKLY_BUSINESS_DAY_COUNT"],\n                df["WEEKLY_SALES"]\n            )\n        ),\n        hovertemplate=f"Week Start: %{{customdata[0]}}<br>Week End: %{{customdata[1]}}<br>Daily Avg Sales: %{{y:,.0f}}<br>Business Days: %{{customdata[2]}}<br>Weekly Sales: %{{customdata[3]:,.0f}}<extra></extra>"\n    ),\n    secondary_y=True\n)\n\nlatest = df.iloc[-1]\nfig.add_trace(\n    go.Scatter(\n        x=[latest["WEEK_END_DATE"].strftime("%Y-%m-%d")],\n        y=[latest["WEEKLY_DAILY_AVERAGE_SALES"]],\n        name="Latest Week",\n        mode="markers",\n        marker=dict(color="#E45756", size=12, symbol="diamond"),\n        customdata=[[\n            latest["WEEK_START_DATE"].strftime("%Y-%m-%d"),\n            latest["WEEK_END_DATE"].strftime("%Y-%m-%d"),\n            latest["WEEKLY_BUSINESS_DAY_COUNT"],\n            latest["WEEKLY_SALES"]\n        ]],\n        hovertemplate=f"Latest Week<br>Week Start: %{{customdata[0]}}<br>Week End: %{{customdata[1]}}<br>Daily Avg Sales: %{{y:,.0f}}<br>Business Days: %{{customdata[2]}}<br>Weekly Sales: %{{customdata[3]:,.0f}}<extra></extra>",\n        showlegend=True\n    ),\n    secondary_y=True\n)\n\nfig.update_layout(\n    title=f"Relmora National Weekly Sales Trend - Most Recent 13 Weeks<br><sup>Total R13W Sales: {df[\'TOTAL_MG_R13W\'].iloc[0]:,.0f}</sup>",\n    xaxis_title="Week End Date",\n    yaxis_title="Weekly Sales",\n    yaxis2_title="Weekly Daily Average Sales",\n    template="plotly_white",\n    width=1000,\n    legend=dict(orientation="h", y=1.12, x=0),\n    hovermode="x unified"\n)\n\nfig.update_xaxes(type="category", tickangle=-45)\nfig.update_yaxes(tickformat=",", secondary_y=False)\nfig.update_yaxes(tickformat=",", secondary_y=True)'}, response_metadata={}, id='30c501ea-1993-4663-b307-b09a089d608a', tool_calls=[], invalid_tool_calls=[]), HumanMessage(content='Are we seeing strong short-term sales momentum?', additional_kwargs={}, response_metadata={}, id='bb36a2c0-349f-4e8a-b28b-1176c7ec4962'), AIMessage(content="SQL Query Executed:\nWITH max_week_end_date_cte AS (\n    SELECT MAX(week_end_date) AS max_week_end_date\n    FROM data_867\n),\nperiod_boundaries_cte AS (\n    SELECT\n        m.max_week_end_date AS r4w_end_date,\n        DATEADD(DAY, -27, m.max_week_end_date) AS r4w_start_date,\n        DATEADD(DAY, -28, m.max_week_end_date) AS p4w_end_date,\n        DATEADD(DAY, -55, m.max_week_end_date) AS p4w_start_date\n    FROM max_week_end_date_cte m\n),\nbusiness_day_counts_cte AS (\n    SELECT\n        COUNT(DISTINCT CASE WHEN d.is_business_day = 1 AND d.week_end_date BETWEEN pb.r4w_start_date AND pb.r4w_end_date THEN d.date END) AS r4w_business_days,\n        COUNT(DISTINCT CASE WHEN d.is_business_day = 1 AND d.week_end_date BETWEEN pb.p4w_start_date AND pb.p4w_end_date THEN d.date END) AS p4w_business_days\n    FROM data_867 d\n    CROSS JOIN period_boundaries_cte pb\n    WHERE d.week_end_date <= pb.r4w_end_date\n      AND d.week_end_date >= pb.p4w_start_date\n),\nperiod_completeness_cte AS (\n    SELECT\n        CASE WHEN COUNT(DISTINCT CASE WHEN d.week_end_date BETWEEN pb.r4w_start_date AND pb.r4w_end_date THEN d.week_end_date END) = 4 THEN 1 ELSE 0 END AS is_r4w_complete,\n        CASE WHEN COUNT(DISTINCT CASE WHEN d.week_end_date BETWEEN pb.p4w_start_date AND pb.p4w_end_date THEN d.week_end_date END) = 4 THEN 1 ELSE 0 END AS is_p4w_complete\n    FROM data_867 d\n    CROSS JOIN period_boundaries_cte pb\n    WHERE d.week_end_date <= pb.r4w_end_date\n      AND d.week_end_date >= pb.p4w_start_date\n),\nmomentum_base_cte AS (\n    SELECT\n        SUM(CASE WHEN d.week_end_date BETWEEN pb.r4w_start_date AND pb.r4w_end_date THEN d.relmora_total_mg ELSE 0 END) AS relmora_total_mg_r4w,\n        SUM(CASE WHEN d.week_end_date BETWEEN pb.p4w_start_date AND pb.p4w_end_date THEN d.relmora_total_mg ELSE 0 END) AS relmora_total_mg_p4w\n    FROM data_867 d\n    CROSS JOIN period_boundaries_cte pb\n    WHERE d.week_end_date <= pb.r4w_end_date\n      AND d.week_end_date >= pb.p4w_start_date\n),\nmomentum_metrics_incomplete_cte AS (\n    SELECT\n        pb.r4w_start_date,\n        pb.r4w_end_date,\n        pb.p4w_start_date,\n        pb.p4w_end_date,\n        bd.r4w_business_days,\n        bd.p4w_business_days,\n        pc.is_r4w_complete,\n        pc.is_p4w_complete,\n        mb.relmora_total_mg_r4w,\n        mb.relmora_total_mg_p4w,\n        CAST(mb.relmora_total_mg_r4w / NULLIF(bd.r4w_business_days, 0) AS INTEGER) AS relmora_daily_avg_mg_r4w,\n        CAST(mb.relmora_total_mg_p4w / NULLIF(bd.p4w_business_days, 0) AS INTEGER) AS relmora_daily_avg_mg_p4w,\n        CONCAT(\n            ROUND(\n                CASE\n                    WHEN CAST(mb.relmora_total_mg_p4w / NULLIF(bd.p4w_business_days, 0) AS INTEGER) = 0\n                         AND CAST(mb.relmora_total_mg_r4w / NULLIF(bd.r4w_business_days, 0) AS INTEGER) > 0 THEN 100\n                    WHEN CAST(mb.relmora_total_mg_p4w / NULLIF(bd.p4w_business_days, 0) AS INTEGER) = 0\n                         AND CAST(mb.relmora_total_mg_r4w / NULLIF(bd.r4w_business_days, 0) AS INTEGER) = 0 THEN 0\n                    ELSE (\n                        (\n                            CAST(mb.relmora_total_mg_r4w / NULLIF(bd.r4w_business_days, 0) AS INTEGER) -\n                            CAST(mb.relmora_total_mg_p4w / NULLIF(bd.p4w_business_days, 0) AS INTEGER)\n                        ) / NULLIF(CAST(mb.relmora_total_mg_p4w / NULLIF(bd.p4w_business_days, 0) AS INTEGER), 0)\n                    ) * 100\n                END\n            ),\n            '%'\n        ) AS relmora_daily_avg_growth_mg_r4w_vs_p4w\n    FROM period_boundaries_cte pb\n    CROSS JOIN business_day_counts_cte bd\n    CROSS JOIN period_completeness_cte pc\n    CROSS JOIN momentum_base_cte mb\n),\nmomentum_classification_cte AS (\n    SELECT\n        m.*,\n        CASE\n            WHEN ROUND(\n                CASE\n                    WHEN m.relmora_daily_avg_mg_p4w = 0 AND m.relmora_daily_avg_mg_r4w > 0 THEN 100\n                    WHEN m.relmora_daily_avg_mg_p4w = 0 AND m.relmora_daily_avg_mg_r4w = 0 THEN 0\n                    ELSE ((m.relmora_daily_avg_mg_r4w - m.relmora_daily_avg_mg_p4w) / NULLIF(m.relmora_daily_avg_mg_p4w, 0)) * 100\n                END\n            ) > 0 THEN 'Positive'\n            WHEN ROUND(\n                CASE\n                    WHEN m.relmora_daily_avg_mg_p4w = 0 AND m.relmora_daily_avg_mg_r4w > 0 THEN 100\n                    WHEN m.relmora_daily_avg_mg_p4w = 0 AND m.relmora_daily_avg_mg_r4w = 0 THEN 0\n                    ELSE ((m.relmora_daily_avg_mg_r4w - m.relmora_daily_avg_mg_p4w) / NULLIF(m.relmora_daily_avg_mg_p4w, 0)) * 100\n                END\n            ) < 0 THEN 'Negative'\n            ELSE 'Flat'\n        END AS short_term_sales_momentum_assessment_r4w_vs_p4w\n    FROM momentum_metrics_incomplete_cte m\n)\nSELECT\n    r4w_start_date,\n    r4w_end_date,\n    p4w_start_date,\n    p4w_end_date,\n    r4w_business_days,\n    p4w_business_days,\n    is_r4w_complete,\n    is_p4w_complete,\n    relmora_total_mg_r4w,\n    relmora_total_mg_p4w,\n    relmora_daily_avg_mg_r4w,\n    relmora_daily_avg_mg_p4w,\n    relmora_daily_avg_growth_mg_r4w_vs_p4w,\n    short_term_sales_momentum_assessment_r4w_vs_p4w\nFROM momentum_classification_cte\nLIMIT 1;\n\nResult Summary:\nThe analysis answers a straightforward business question: is Relmora’s national sales momentum improving or weakening in the most recent 4 weeks versus the prior 4 weeks. It looks at national Relmora sales volume over the latest eight-week span in the data, comparing Feb 7, 2026–Mar 6, 2026 against Jan 10, 2026–Feb 6, 2026. Both periods are complete, which means the comparison is reliable and can be read as a true like-for-like momentum check.\n\nThe result shows Relmora’s short-term momentum is negative. Total volume fell from 370,125 mg in the prior 4 weeks to 259,205 mg in the recent 4 weeks, and the daily average also declined from 19,480 mg to 17,280 mg, a drop of 11%. What stands out is that sales weakened even after adjusting for business days, indicating this is not just a calendar effect but a real slowdown in underlying sales pace.\n\nRelevant Questions:\n- Is short-term sales performance consistent across regions?\n- How are we doing in terms of adding new businesses?\n- What is the sales in the recent week?\n- In which regions is relmora gaining or losing share?", additional_kwargs={}, response_metadata={}, id='9dc9ff8b-906e-4e49-b700-34a5a4aadf95', tool_calls=[], invalid_tool_calls=[]), AIMessage(content='SQL query results', additional_kwargs={'type': 'sql_result', 'data': {'columns': ['R4W_START_DATE', 'R4W_END_DATE', 'P4W_START_DATE', 'P4W_END_DATE', 'R4W_BUSINESS_DAYS', 'P4W_BUSINESS_DAYS', 'IS_R4W_COMPLETE', 'IS_P4W_COMPLETE', 'RELMORA_TOTAL_MG_R4W', 'RELMORA_TOTAL_MG_P4W', 'RELMORA_DAILY_AVG_MG_R4W', 'RELMORA_DAILY_AVG_MG_P4W', 'RELMORA_DAILY_AVG_GROWTH_MG_R4W_VS_P4W', 'SHORT_TERM_SALES_MOMENTUM_ASSESSMENT_R4W_VS_P4W'], 'data': [{'R4W_START_DATE': datetime.date(2026, 2, 7), 'R4W_END_DATE': datetime.date(2026, 3, 6), 'P4W_START_DATE': datetime.date(2026, 1, 10), 'P4W_END_DATE': datetime.date(2026, 2, 6), 'R4W_BUSINESS_DAYS': 15, 'P4W_BUSINESS_DAYS': 19, 'IS_R4W_COMPLETE': 1, 'IS_P4W_COMPLETE': 1, 'RELMORA_TOTAL_MG_R4W': 259205, 'RELMORA_TOTAL_MG_P4W': 370125, 'RELMORA_DAILY_AVG_MG_R4W': 17280, 'RELMORA_DAILY_AVG_MG_P4W': 19480, 'RELMORA_DAILY_AVG_GROWTH_MG_R4W_VS_P4W': '-11%', 'SHORT_TERM_SALES_MOMENTUM_ASSESSMENT_R4W_VS_P4W': 'Negative'}]}}, response_metadata={}, id='c36aaffe-b9a6-4827-9d73-bfb5a0f1f0c8', tool_calls=[], invalid_tool_calls=[]), AIMessage(content='Visualization', additional_kwargs={'type': 'visualization', 'code': 'NO_VISUALIZATION'}, response_metadata={}, id='4ce4a58f-1e0e-47a5-bb3a-7627edbcd34a', tool_calls=[], invalid_tool_calls=[])]
@@ -299,7 +320,7 @@ explaining what the metric measures. Be specific, avoid filler words.
 ### STRICT GUIDELINES
 
 TITLE:
-- Max 20 words
+- Max 15 words
 - Grammatically correct version of: {question}
 - Preserve original meaning without adding new interpretation
 - Do not convert into an insight or statement beyond correcting grammar
@@ -330,7 +351,7 @@ INSIGHT:
 
 ### FINAL SELF-CHECK
 
-✔ Title ≤ 20 words  
+✔ Title ≤ 15 words  
 ✔ Exactly 3 bullets  
 ✔ Insight is actionable  
 ✔ KPIs match question type  
@@ -401,14 +422,16 @@ def generate_chart(block):
         return None
     
 
-def enrich_with_chart(slide):
+def enrich_with_chart(slide, cancel_check: Callable[[], None] | None = None):
+    if cancel_check:
+        cancel_check()
     chart_path = generate_chart({
         "data": slide["data"],
         "viz_code": slide["viz_code"]
     })
 
     slide["chart_path"] = chart_path
-    return slide  
+    return slide
 
 
 def build_slide_data(
@@ -430,9 +453,7 @@ def build_slide_data(
             slide = enrich_with_chart(slide, cancel_check=cancel_check)
         slides.append(slide)
     print(f"[PPT] slides: built (slides={len(slides)})")
-    return slides
-
-
+    return slides  
 
 
 
@@ -758,7 +779,7 @@ def _kpi_card(slide, label: str, value: str,
     p_lbl.alignment = PP_ALIGN.LEFT
     run_lbl = p_lbl.add_run()
     run_lbl.text = label
-    run_lbl.font.size = Pt(7.5)
+    run_lbl.font.size = Pt(9)
     run_lbl.font.bold = True
     run_lbl.font.name = theme["font_body"]
     run_lbl.font.color.rgb = theme["kpi_label_text"]
@@ -766,14 +787,14 @@ def _kpi_card(slide, label: str, value: str,
     rPr.set("spc", str(int(2.2 * 100)))
  
     # Value
-    tb = _tb(slide, inner_l, t + 0.33, inner_w, h - 0.38)
+    tb = _tb(slide, inner_l, t + 0.40, inner_w, h - 0.42)
     tf = tb.text_frame
     tf.word_wrap = True
     p = tf.paragraphs[0]
     p.alignment = PP_ALIGN.LEFT
     run = p.add_run()
     run.text = value
-    run.font.size = Pt(18 if len(value) > 12 else 22)
+    run.font.size = Pt(12 if len(value) > 12 else 14)
     run.font.bold = True
     run.font.name = theme["font_title"]
     run.font.color.rgb = theme["title_text"]
@@ -888,6 +909,8 @@ def create_ppt(slide_data: dict,
         LEFT_PANEL_W = CONTENT_W
         LEFT_PANEL_X = CONTENT_L
  
+    resolved_logo_path = _resolve_local_asset_path(logo_path)
+
     # Subtitle
     subtitle = slide_data.get("subtitle", "BUSINESS QUESTION")
     _label(slide, subtitle, CONTENT_L, MARGIN_T, 5, SUBTITLE_H,
@@ -896,7 +919,7 @@ def create_ppt(slide_data: dict,
     # Title
     tb = _tb(slide, CONTENT_L, MARGIN_T + SUBTITLE_H, W - MARGIN_L - MARGIN_R, TITLE_H)
     _para(tb, slide_data.get("title", "Untitled"),
-          24, bold=True, color=theme["title_text"], font=theme["font_title"])
+          14, bold=True, color=theme["title_text"], font=theme["font_title"])
  
     # Divider
     _rect(slide, CONTENT_L, DIVIDER_Y, CONTENT_W, DIVIDER_H, theme["divider"])
@@ -944,7 +967,7 @@ def create_ppt(slide_data: dict,
 
             # Definition text box — pinned to bottom of each card
             if definition:
-                DEF_H   = 0.22
+                DEF_H   = 0.28
                 DEF_PAD = 0.06
                 tb = _tb(slide,
                          KPI_X + DEF_PAD,
@@ -957,7 +980,7 @@ def create_ppt(slide_data: dict,
                 p.alignment = PP_ALIGN.LEFT
                 run = p.add_run()
                 run.text = definition
-                run.font.size = Pt(6.5)
+                run.font.size = Pt(7)
                 run.font.color.rgb = theme.get("muted_text", RGBColor(0x99, 0x99, 0x99))
                 run.font.name = theme["font_body"]
                 run.font.italic = True
@@ -979,9 +1002,9 @@ def create_ppt(slide_data: dict,
         LOGO_H = 0.4
         LOGO_MARGIN = 0.1
 
-        if logo_path and os.path.exists(logo_path):
+        if resolved_logo_path:
             slide.shapes.add_picture(
-                logo_path,
+                resolved_logo_path,
                 Inches(CONTENT_L),
                 Inches(INSIGHT_Y + KI_LABEL_H + LOGO_MARGIN),
                 width=Inches(LOGO_W),
@@ -1038,14 +1061,13 @@ def build_ppt(
     chart_path_overrides: list[str] | None = None,
     cancel_check: Callable[[], None] | None = None,
 ) -> str:
-    resolved_template = (
-        uploaded_pptx_path
-        if uploaded_pptx_path and os.path.exists(uploaded_pptx_path)
-        else None
+    resolved_template = _resolve_local_asset_path(uploaded_pptx_path)
+    resolved_logo = _resolve_local_asset_path(logo_path)
+    theme = (
+        extract_theme_from_pptx(resolved_template)
+        if resolved_template
+        else dict(_DEFAULT)
     )
-    resolved_logo = logo_path if logo_path and os.path.exists(logo_path) else None
-    theme = (extract_theme_from_pptx(resolved_template)
-             if resolved_template else dict(_DEFAULT))
 
     print(
         "[PPT] build: start "
@@ -1059,13 +1081,13 @@ def build_ppt(
         chart_path_overrides=chart_path_overrides,
         cancel_check=cancel_check,
     )
- 
+
     prs = None
     for slide in slides:
         if cancel_check:
             cancel_check()
         prs = create_ppt(slide, prs, theme=theme, logo_path=resolved_logo)
- 
+
     if cancel_check:
         cancel_check()
     prs.save(output_path)
