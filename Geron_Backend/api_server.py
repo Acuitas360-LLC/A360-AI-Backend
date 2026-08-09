@@ -47,6 +47,7 @@ if BACKEND_ROOT_DIR not in sys.path:
 # so pin process cwd to backend directory for consistent resolution.
 os.chdir(BACKEND_DIR)
 load_dotenv(os.path.join(PROJECT_ROOT_DIR, ".env"))
+load_dotenv(os.path.join(BACKEND_ROOT_DIR, ".env"))
 
 from tenant_settings import (
     ALLOWED_TENANTS,
