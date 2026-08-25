@@ -1050,13 +1050,17 @@ def create_ppt(slide_data: dict,
 def build_ppt(
     messages,
     output_path: str = "final_presentation.pptx",
-    uploaded_pptx_path: str | None = "backend\\Aadibio_Backend\\aadibio_ppt.pptx",
-    logo_path: str | None = "backend\\Aadibio_Backend\\aadibio_logo.png",
+    uploaded_pptx_path: str | None = "aadibio_ppt.pptx",
+    logo_path: str | None = "aadibio_logo.png",
     chart_path_overrides: list[str] | None = None,
     cancel_check: Callable[[], None] | None = None,
 ) -> str:
     resolved_template = _resolve_local_asset_path(uploaded_pptx_path)
-    resolved_logo = _resolve_local_asset_path(logo_path)
+    resolved_logo = (
+        _resolve_local_asset_path(logo_path)
+        or _resolve_local_asset_path("Aadibio_Backend/aadibio_logo.png")
+        or _resolve_local_asset_path("aadibio_logo.png")
+    )
     theme = (
         extract_theme_from_pptx(resolved_template)
         if resolved_template
