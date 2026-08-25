@@ -15,6 +15,7 @@ import time
 from contextvars import ContextVar
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+import importlib.util
 from importlib import import_module
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable, Optional
@@ -126,6 +127,7 @@ _tenant_checkpointers: dict[str, Any] = {}
 _tenant_chatbots: dict[str, Any] = {}
 _tenant_stream_subgraphs: dict[str, Any] = {}
 _tenant_imported_modules: dict[str, dict[str, Any]] = {}
+_tenant_viz_polish_modules: dict[str, Any] = {}
 
 
 def _normalize_tenant(value: Optional[str]) -> Optional[str]:
@@ -226,6 +228,45 @@ def _import_tenant_module(tenant: str, module_kind: str) -> Any:
             _restore_tenant_env(previous_env)
 
         imported_modules[module_kind] = module
+        return module
+
+
+def _load_tenant_viz_polish_module(tenant: str) -> Any:
+    if tenant != "aadibio":
+        return None
+
+    cached = _tenant_viz_polish_modules.get(tenant)
+    if cached is not None:
+        return cached
+
+    with _tenant_import_lock:
+        cached = _tenant_viz_polish_modules.get(tenant)
+        if cached is not None:
+            return cached
+
+        settings = get_tenant_settings(tenant)
+        module_path = settings.backend_dir / "viz_polish.py"
+        if not module_path.exists():
+            _tenant_viz_polish_modules[tenant] = None
+            return None
+
+        spec = importlib.util.spec_from_file_location(
+            f"{tenant}_viz_polish",
+            str(module_path),
+        )
+        if spec is None or spec.loader is None:
+            _tenant_viz_polish_modules[tenant] = None
+            return None
+
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except Exception as exc:
+            logger.warning("Failed to load viz polish module for %s: %s", tenant, exc)
+            _tenant_viz_polish_modules[tenant] = None
+            return None
+
+        _tenant_viz_polish_modules[tenant] = module
         return module
 
 FEEDBACK_ENRICHMENT_MAX_CHARS = 200000
@@ -1919,9 +1960,20 @@ def _build_plotly_figure_json(
     if not visualization_code or not sql_result:
         return None
 
+    tenant = _get_current_tenant()
+    viz_polish_module = _load_tenant_viz_polish_module(tenant)
+
     raw_code = visualization_code.strip()
     if not raw_code or raw_code.upper() == "NO_VISUALIZATION":
         return None
+
+    if viz_polish_module and hasattr(viz_polish_module, "sanitize_viz_code"):
+        try:
+            sanitized = viz_polish_module.sanitize_viz_code(raw_code)
+            if isinstance(sanitized, str) and sanitized.strip():
+                raw_code = sanitized.strip()
+        except Exception as exc:
+            logger.warning("Tenant viz code sanitization skipped for %s: %s", tenant, exc)
 
     logger.info("Visualization code raw:\n%s", raw_code)
 
@@ -2042,6 +2094,14 @@ def _build_plotly_figure_json(
     fig = safe_globals.get("fig")
     if fig is None or not hasattr(fig, "to_plotly_json"):
         return None
+
+    if viz_polish_module and hasattr(viz_polish_module, "apply_classic_layout"):
+        try:
+            polished = viz_polish_module.apply_classic_layout(fig, df=df)
+            if polished is not None:
+                fig = polished
+        except Exception as exc:
+            logger.warning("Tenant viz layout polish skipped for %s: %s", tenant, exc)
 
     try:
         figure_json = fig.to_plotly_json()

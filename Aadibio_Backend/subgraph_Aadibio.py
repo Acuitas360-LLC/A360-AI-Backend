@@ -691,7 +691,7 @@ def get_relevant_history(state,recent_messages):
     ────────────────────────────────────────────────
     CRITICAL RULE — ID ANCHORING
     ────────────────────────────────────────────────
-    - NEVER generate, guess, or infer entity IDs (campus_id, geography_id, etc.)
+    - NEVER generate, guess, or infer entity IDs (child_id, geography_id, etc.)
     - Only include IDs that appear verbatim in the SQL result data
     - If a question references "the above accounts", "those accounts", or "same accounts",
     extract the exact IDs from the most recent SQL result — do not add, remove, or rename any
@@ -724,7 +724,7 @@ def get_relevant_history(state,recent_messages):
 
     "anchored_entities": [
         {{
-        "id": "<exact ID string from SQL results, e.g. campus_id_532>",
+        "id": "<exact ID string from SQL results, e.g. child_id_532>",
         "name": "<exact account name from SQL results>",
         "relevant_metrics": {{
             // Only include key-value pairs the next query will actually need.
@@ -755,13 +755,13 @@ def get_relevant_history(state,recent_messages):
 
     "suggested_join_keys": [
         // Column names that can link this extracted context to the new query.
-        // e.g. "campus_id", "account_id", "period_start"
+        // e.g. "child_id", "account_id", "period_start"
     ],
 
 
     "warnings": [
         // Anything the query builder should know before proceeding.
-        // e.g. "Period window may be incomplete", "IDs are internal campus_id values, not public"
+        // e.g. "Period window may be incomplete", "IDs are internal child_id values, not public"
     ]
     }}
 
@@ -863,7 +863,7 @@ RULES
    using raw turn content if Source 1 already resolves them.
 
 2. RESOLVE ALL REFERENCES FROM anchored_entities
-   "Those accounts", "same campuses", "them", "above" → IDs from
+   "Those accounts", "same childes", "them", "above" → IDs from
    anchored_entities only. If an ID is not there, check raw turns.
    If not in either source, it does not exist for this query.
 
@@ -938,7 +938,7 @@ RULES
 #    structured summary of recent context. Do not re-derive what they already provide.
 
 # 3. Preserve Account Continuity
-#    Resolve references like "those accounts", "same campuses", "previous accounts" from anchored_entities Never fabricate IDs.
+#    Resolve references like "those accounts", "same childes", "previous accounts" from anchored_entities Never fabricate IDs.
 
 # 4. Reference Resolution
 #    Pronouns and relative terms ("those", "same", "above", "them", "these") must
@@ -980,7 +980,7 @@ RULES
 
 # They contain previously computed:
 
-# * Entities (e.g., campus_accounts, parent_accounts, regions, products, tiers, segments)
+# * Entities (e.g., child_accounts, parent_accounts, regions, products, tiers, segments)
 # * Filters (e.g., date ranges, time periods, conditions)
 # * Metrics (e.g., sales, growth, aggregates)
 # * SQL queries and their results
@@ -1001,7 +1001,7 @@ RULES
 # * Historical entity relationships
 # * Earlier filters and comparisons
 # * Repeated user intent patterns
-# * Previously identified campus_accounts and parent_accounts
+# * Previously identified child_accounts and parent_accounts
 
 # Use this summary to maintain long-range conversational continuity while prioritizing the RECENT CONVERSATION CONTEXT when conflicts occur.
 
@@ -1021,8 +1021,8 @@ RULES
 
 # 3. Preserve Account Continuity
 
-#    * Maintain continuity of previously identified campus_accounts and parent_accounts across follow-up queries.
-#    * If the user references "those accounts", "same campuses", "same parents", "previous accounts", or similar language, resolve them using the most recently derived account sets.
+#    * Maintain continuity of previously identified child_accounts and parent_accounts across follow-up queries.
+#    * If the user references "those accounts", "same childes", "same parents", "previous accounts", or similar language, resolve them using the most recently derived account sets.
 #    * Reuse previously computed account cohorts whenever possible instead of recomputing them.
 
 # 4. Reference Resolution
@@ -1113,7 +1113,7 @@ def query_decomposer_node(state: AgentState):
     - Every filter, aggregation, and grouping must be stated
     - If feedback is provided, revise ONLY the affected parts
     - Preserve correct logic from previous decompositions
-    - If the user does not explicitly specify campus or parent level, default all queries and aggregations to the campus entity level. (VERY IMPORTANT)
+    - If the user does not explicitly specify child or parent level, default all queries and aggregations to the child entity level. (VERY IMPORTANT)
 
     ────────────────────────
     Metric & Output Handling Rules (Must Always Be Enforced):
@@ -1181,8 +1181,9 @@ def query_decomposer_node(state: AgentState):
             
                 Dormant Addition Trend: dormant_additions(W) = weekly_dormant_accounts(W) - weekly_dormant_accounts(W - 1 week).
             
-    
-            Top 25 accounts = top 25 parent accounts ranked by total demand vials (commercial + PAP) from Jan 1, 2025 through the current date, sorted descending by demand vials.
+        Top 25 accounts = top 25 parent accounts ranked by total demand vials (commercial + PAP) from Jan 1, 2025 through the current date, sorted descending by demand vials.
+        Any "top account" query defaults to: top N parent accounts ranked by total demand vials (commercial + PAP), Jan 1, 2025 through current date, sorted descending. Override only if the user specifies a different grain or date range.
+            
             Reactivated Account Rules:
     
                 QUALIFYING ORDER: a week counts as "ordered" only if it contains a row with
@@ -1248,45 +1249,137 @@ def query_decomposer_node(state: AgentState):
         Cross Table Rules (revenue + revenue_forecast):
             balance_to_go = net_sales_forecast/gross_sales_forecast(revenue_forecast Table) - net_sales/gross_sales(revenue table) — always compute it this way, and never label a value "balance to go" unless it follows this exact formula.
      
-        Default Rules:
-            Display both period-level metrics and daily average metrics ONLY when the period is complete. If the period is incomplete, display only daily average metrics with total Volume demand., where Daily Average = Total / COUNT(DISTINCT CASE WHEN is_business_day = 1 THEN date END computed at NATIONAL level) (VERY IMPORTANT).
-            All business day calculations MUST be performed strictly at the national level only, and must NEVER be derived from any regional, tier, or segmented data.
-            If the user does not explicitly specify a total demand denominator, assume overall national demand as the default denominator.
-            For growth metrics, if the previous period value is 0 and the current period value is greater than 0, the growth must be reported as 100%.
-            All child entities roll up to their respective parent entities.
-            If the user does not explicitly specify child or parent level, default all queries and aggregations to the parent entity level. (VERY IMPORTANT)
-            Always accompany any growth metric or percentage value with the corresponding absolute volume demand value.
-            Whenever the query references “nation,” compute the national-level metrics and include them in the output.
-            Whenever a user asks about performance, always calculate and include the growth (percentage change vs the previous comparable period)
-            Our Product is fyarro.
-            For every time period in the output, explicitly display the corresponding number of business days
-            Whenever growth is calculated for any segmentation level (e.g., segment, tier, region, area, geography, account type, city, state, or territory), also calculate nation growth and add a column indicating whether the segment is performing Higher or Lower than the nation.
-            Always perform aggregations using ID fields (e.g., child_id, parent_id) for accuracy, and include the corresponding names in the final output.
-            All segment vs nation growth comparisons must be strictly based on Daily Average Growth (growth normalized by national business days), which serves as the single anchor metric for determining relative performance.
-            If asked about demand by default give national demand don't group by parent_id or parent_name.
-            Do not automatically restrict calculations to the **most recent completed period** unless the user explicitly requests it.
-            When displaying the daily average metric, always round and format the value to exactly 1 decimal place.
-            Every demand metric must be named demand_vials_<direction><period> (e.g., demand_vials_r4w for recent 4 weeks) — never display demand without this exact prefix and suffix format.
-            Every budget metric must be named budget_vials_<direction><period> (e.g., budget_vials_r4w for recent 4 weeks) — never display demand without this exact prefix and suffix format.
-            Every revenue metric must be named _$_<direction><period> (e.g., gross_sales_$_r4w for recent 4 weeks) — never display revenue without this exact prefix and suffix format.
-            Default to the child account for all account-level queries. Exception: for any Top 25, Top 75, or account tier/segment query, always anchor to the parent account instead — never the child.
-            Whenever information is displayed at the account level, only display Commercial + PAP metrics. Don't default to Commercial
-            Whenever a query is at the account level, never display daily average metrics — always display total (aggregate) metrics instead, unless the user explicitly instructs otherwise.
-            All revenue and sales values must be reported to one decimal place (e.g., $12345.6). No exceptions — round, do not truncate.
-            For any trend-level question, default to the most recent 52 weeks of data for account level,  demand and revenue/sales, unless a different time period is explicitly specified.
-            Any query involving sales, revenue, net sales, or gross sales must anchor to the Revenue table as the single source of truth — no other table should be used for these metrics.
-            Don't display/calculate the number of Business Days for revenue/sales related queries
-            Sales/revenue trend data must always be shown broken down by month.
-            An ordering account is the one whose valid_order=1 and qty_sold>0
-            Whenever displaying actual sales metrics, always include the corresponding ex-factory vials quantity alongside them.
-            
-            A reactivated account is defined as a child account that was previously dormant (no order in the last 8 weeks) and has now placed an order, moving it out of dormant status.
-            If a result is a decimal number, round it to one decimal place before presenting it (e.g., 3.14159 → 3.1).
-            Longitudinal trend = pivoted view with accounts as rows and the actual week_end_date values as column headers (real dates, never generic labels like "Week 1"). Each cell shows that account's demand vials (commercial + PAP) for that week. Account level follows query context. Default window is the most recent 26 weeks, anchored to MAX(week_end_date) from the data itself. Build the pivot dynamically so column headers are the real dates — never static positional labels.
-        
+    Default Rules:
+    ## 0. Precedence
+
+    When rules conflict, resolve top-down:
+
+    1. Explicit user instruction
+    2. Metric-specific definition (§6, §7)
+    3. Grain ladder (§1)
+    4. Defaults in this document
+
+    ---
+
+    ## 1. Grain
+
+    Resolve output grain in this order. First match wins.
+
+    | # | Condition | Grain |
+    |---|---|---|
+    | 1 | User names a grain explicitly | As stated |
+    | 2 | Account-status metric — breadth, depth, new activation, dormancy, reactivation | `child_id` |
+    | 3 | Reach or call frequency | `parent_id` |
+    | 4 | Any account ranking query — "top N accounts" (Top 10 / Top 25 / Top 75 / "top accounts by ...") **or** "worst / bottom / lowest N accounts" (bottom 25, worst performers, lowest-volume accounts, underperforming accounts) — plus account tier / account segment | `parent_id` — always roll up to the parent account level by default |
+    | 5 | Any other account-level question | `child_id` |
+    | 6 | Everything else (incl. plain "demand" questions) | **National — no account grouping at all** |
+
+    Rules:
+
+    - Child entities roll up to their parent.
+    - Aggregate on ID fields (`child_id`, `parent_id`); carry the corresponding name into the output.
+    - A plain demand question returns national demand. Do **not** group by `parent_id` / `parent_name` unless asked.
+    - Whenever the query says "nation," include national metrics in the output.
+
+    ---
+
+    ## 2. Population & Source Tables
+
+    - **Demand default = Commercial + PAP** at every grain (national, segment, account). `data_867` UNION `data_867_pap` with `transaction_type = 'COM'` on the PAP branch. Never default to Commercial alone.
+    - **Sales / revenue / net sales / gross sales → Revenue table only.** Single source of truth. No other table may serve these metrics.
+    - Ex-factory vials accompany every actual-sales metric, sourced from the Revenue table.
+    - Product is **Fyarro**.
+
+    ---
+
+    ## 3. Time & Anchoring
+
+    - Anchor every window to the data, never to system date: `MAX(week_end_date)` for demand, `MAX(transaction_date)` for revenue, `MAX(call_date)` for calls.
+    - Restrict to the most recent *completed* period unless the user asks otherwise.
+
+    **Default windows:**
+
+    | Question type | Window | Grain of the time axis |
+    |---|---|---|
+    | Demand trend | 52 weeks | Weekly |
+    | Revenue / sales trend | 12 months | **Monthly** |
+    | Longitudinal trend (pivot) | 26 weeks | Weekly |
+
+    Longitudinal trend = pivot with accounts as rows and actual `week_end_date` values as column headers. Real dates only — never "Week 1". Each cell = that account's COM+PAP demand vials for that week. Build headers dynamically from the data. Account grain follows §1.
+
+    ---
+
+    ## 4. Business Days & Daily Averages
+
+    - Business days are computed **strictly at national level**, never derived from regional, tier, or segmented data.
+    - `daily_average = total / COUNT(DISTINCT CASE WHEN is_business_day = 1 THEN date END)` — denominator is always the national business-day count.
+
+    **Where daily averages are permitted:**
+
+    | Output grain | Daily average? |
+    |---|---|
+    | National | Yes |
+    | Segment / tier / region / area / geo / state / city / territory | Yes — divided by *national* business days |
+    | Account (parent or child) | **Never** — totals only |
+    | Any revenue / sales metric | **Never** |
+
+    **Period completeness (national and segment rows only):**
+
+    - Complete period → show period totals **and** daily averages.
+    - Incomplete period → show daily averages **and** total volume demand.
+    - Account rows → totals only, regardless of completeness.
+
+    **Business-day display:**
+
+    - Show the business-day count next to every time period in demand and budget output.
+    - Do **not** compute or display business days for revenue / sales output.
+
+    ---
+
+    ## 5. Growth & Comparisons
+
+    - Any "performance" question includes growth (% change vs. the prior comparable period).
+    - Pair every growth or percentage with the absolute value **of the same metric family** — demand growth with demand vials, revenue growth with revenue dollars.
+    - Prior = 0 and current > 0 → growth = **100%**.
+    - Prior = 0 and current = 0 → growth = **0%**.
+    - Prior is NULL → treat as 0.
+    - When growth is reported at any segmentation level (segment, tier, region, area, geography, account type, city, state, territory), also compute **national growth** and add a column flagging the segment as **Higher** or **Lower** than nation.
+    - The single anchor metric for every segment-vs-nation comparison is **daily average growth** (normalized by national business days). This applies to segment/tier aggregates. Account-grain rows are never compared this way — they carry total growth only.
+    - Default denominator for any share or "% of total" metric is **overall national demand**, unless the user specifies otherwise.
+
+    ---
+
+    ## 6. Account Status Definitions
+
+    All account-status metrics are at **child grain**.
+
+    **Qualifying order:** `valid_order = 1 AND qty_sold > 0`. An "ordering account" is a child with at least one qualifying order in the window.
+
+    **Dormant** — evaluated at week *W*:
+    - Zero qualifying orders across the trailing 8 weeks (W-8 … W-1), **and**
+    - Zero qualifying orders in week W.
+
+    **Reactivated** — evaluated at week *W*, all three must hold:
+    1. At least one qualifying order **before** the trailing 8-week window (prior order history exists), **and**
+    2. Zero qualifying orders across the trailing 8 weeks (W-8 … W-1), **and**
+    3. At least one qualifying order in week W.
+
+    Total span evaluated: 9 weeks.
+
+    **New account** — first-ever qualifying order falls in week W. A new account can **never** be classified as reactivated; condition (1) excludes it.
+
+    ---
+
+    **Rounding** — one rule: round (never truncate) every decimal result to **1 decimal place**.
+    - Daily averages → `123.4`
+    - Revenue / sales in $	Nearest whole integer — no decimals	$12346
+    - Percentages → `12.3%`
+    - All other decimal results	1 decimal	3.1
+
         Time Rules:
     
         If the user does not specify a time period, default to the most recent 8 weeks of available data.
+        Never display month_start_date, month_end_date, quarter_start_date, or quarter_end_date in the output. Show month_year for month grain, quarter_year for quarter grain.
         The current time period for revenue forecast must always be determined using the revenue table, not the revenue_forecast table.
         When output is at a weekly grain, suppress all daily average/daily-derived metrics unless the user explicitly requests a daily breakdown alongside the weekly view.
         LTD = Launch to Date; YTD = Year to Date; MTD = Month to Date; QTD = Quarter to Date.
@@ -1297,7 +1390,7 @@ def query_decomposer_node(state: AgentState):
         If the user asks for growth without specifying a timeframe, compute growth as Recent 8 Weeks (R8W) vs Prior 8 Weeks (P8W).
         If the user refers to sudden behavior, spike, drop, anomaly, or similar wording, perform the analysis using a 4-week time window.
         Always determine the latest time period using transaction_date, Retrieve the corresponding quarter_year or month_year from the row with the latest week_end_date or date.
-    Whenever any time period is involved (including but not limited to weekly averages), the output must explicitly include the time period boundaries, i.e., the start date and end date (e.g., week_start_date and week_end_date). (VERY IMPORTANT)
+        Every time-based result must identify its period — week grain outputs week_start_date and week_end_date, month grain outputs month_year only, quarter grain outputs quarter_year only, any other grain outputs start and end date — and month_start_date, month_end_date, quarter_start_date, and quarter_end_date are never displayed. (VERY IMPORTANT)
     When the user refers to **current, recent, last, or previous** month, quarter, or year, first determine the most recent available date using:
     
     max_week_end_date = MAX(week_end_date)
@@ -1727,8 +1820,9 @@ USER QUERY (LATEST HUMAN MESSAGE)
             
                 Dormant Addition Trend: dormant_additions(W) = weekly_dormant_accounts(W) - weekly_dormant_accounts(W - 1 week).
             
-    
             Top 25 accounts = top 25 parent accounts ranked by total demand vials (commercial + PAP) from Jan 1, 2025 through the current date, sorted descending by demand vials.
+            Any "top account" query defaults to: top N parent accounts ranked by total demand vials (commercial + PAP), Jan 1, 2025 through current date, sorted descending. Override only if the user specifies a different grain or date range.
+            
             Reactivated Account Rules:
     
                 QUALIFYING ORDER: a week counts as "ordered" only if it contains a row with
@@ -1794,42 +1888,134 @@ USER QUERY (LATEST HUMAN MESSAGE)
         Cross Table Rules (revenue + revenue_forecast):
             balance_to_go = net_sales_forecast/gross_sales_forecast(revenue_forecast Table) - net_sales/gross_sales(revenue table) — always compute it this way, and never label a value "balance to go" unless it follows this exact formula.
      
-        Default Rules:
-            Display both period-level metrics and daily average metrics ONLY when the period is complete. If the period is incomplete, display only daily average metrics with total Volume demand., where Daily Average = Total / COUNT(DISTINCT CASE WHEN is_business_day = 1 THEN date END computed at NATIONAL level) (VERY IMPORTANT).
-            All business day calculations MUST be performed strictly at the national level only, and must NEVER be derived from any regional, tier, or segmented data.
-            If the user does not explicitly specify a total demand denominator, assume overall national demand as the default denominator.
-            For growth metrics, if the previous period value is 0 and the current period value is greater than 0, the growth must be reported as 100%.
-            All child entities roll up to their respective parent entities.
-            If the user does not explicitly specify child or parent level, default all queries and aggregations to the parent entity level. (VERY IMPORTANT)
-            Always accompany any growth metric or percentage value with the corresponding absolute volume demand value.
-            Whenever the query references “nation,” compute the national-level metrics and include them in the output.
-            Whenever a user asks about performance, always calculate and include the growth (percentage change vs the previous comparable period)
-            Our Product is fyarro.
-            For every time period in the output, explicitly display the corresponding number of business days
-            Whenever growth is calculated for any segmentation level (e.g., segment, tier, region, area, geography, account type, city, state, or territory), also calculate nation growth and add a column indicating whether the segment is performing Higher or Lower than the nation.
-            Always perform aggregations using ID fields (e.g., child_id, parent_id) for accuracy, and include the corresponding names in the final output.
-            All segment vs nation growth comparisons must be strictly based on Daily Average Growth (growth normalized by national business days), which serves as the single anchor metric for determining relative performance.
-            If asked about demand by default give national demand don't group by parent_id or parent_name.
-            Do not automatically restrict calculations to the **most recent completed period** unless the user explicitly requests it.
-            When displaying the daily average metric, always round and format the value to exactly 1 decimal place.
-            Every demand metric must be named demand_vials_<direction><period> (e.g., demand_vials_r4w for recent 4 weeks) — never display demand without this exact prefix and suffix format.
-            Every budget metric must be named budget_vials_<direction><period> (e.g., budget_vials_r4w for recent 4 weeks) — never display demand without this exact prefix and suffix format.
-            Every revenue metric must be named _$_<direction><period> (e.g., gross_sales_$_r4w for recent 4 weeks) — never display revenue without this exact prefix and suffix format.
-            Default to the child account for all account-level queries. Exception: for any Top 25, Top 75, or account tier/segment query, always anchor to the parent account instead — never the child.
-            Whenever information is displayed at the account level, only display Commercial + PAP metrics. Don't default to Commercial
-            Whenever a query is at the account level, never display daily average metrics — always display total (aggregate) metrics instead, unless the user explicitly instructs otherwise.
-            All revenue and sales values must be reported to one decimal place (e.g., $12345.6). No exceptions — round, do not truncate.
-            For any trend-level question, default to the most recent 52 weeks of data for account level,  demand and revenue/sales, unless a different time period is explicitly specified.
-            Any query involving sales, revenue, net sales, or gross sales must anchor to the Revenue table as the single source of truth — no other table should be used for these metrics.
-            Don't display/calculate the number of Business Days for revenue/sales related queries
-            Sales/revenue trend data must always be shown broken down by month.
-            An ordering account is the one whose valid_order=1 and qty_sold>0
-            Whenever displaying actual sales metrics, always include the corresponding ex-factory vials quantity alongside them.
-            
-            A reactivated account is defined as a child account that was previously dormant (no order in the last 8 weeks) and has now placed an order, moving it out of dormant status.
-            If a result is a decimal number, round it to one decimal place before presenting it (e.g., 3.14159 → 3.1).
-            Longitudinal trend = pivoted view with accounts as rows and the actual week_end_date values as column headers (real dates, never generic labels like "Week 1"). Each cell shows that account's demand vials (commercial + PAP) for that week. Account level follows query context. Default window is the most recent 26 weeks, anchored to MAX(week_end_date) from the data itself. Build the pivot dynamically so column headers are the real dates — never static positional labels.
-        
+    Default Rules:
+    ## 0. Precedence
+
+    When rules conflict, resolve top-down:
+
+    1. Explicit user instruction
+    2. Metric-specific definition (§6, §7)
+    3. Grain ladder (§1)
+    4. Defaults in this document
+
+    ---
+
+    ## 1. Grain
+
+    Resolve output grain in this order. First match wins.
+
+    | # | Condition | Grain |
+    |---|---|---|
+    | 1 | User names a grain explicitly | As stated |
+    | 2 | Account-status metric — breadth, depth, new activation, dormancy, reactivation | `child_id` |
+    | 3 | Reach or call frequency | `parent_id` |
+    | 4 | Any account ranking query — "top N accounts" (Top 10 / Top 25 / Top 75 / "top accounts by ...") **or** "worst / bottom / lowest N accounts" (bottom 25, worst performers, lowest-volume accounts, underperforming accounts) — plus account tier / account segment | `parent_id` — always roll up to the parent account level by default |
+    | 5 | Any other account-level question | `child_id` |
+    | 6 | Everything else (incl. plain "demand" questions) | **National — no account grouping at all** |
+
+    Rules:
+
+    - Child entities roll up to their parent.
+    - Aggregate on ID fields (`child_id`, `parent_id`); carry the corresponding name into the output.
+    - A plain demand question returns national demand. Do **not** group by `parent_id` / `parent_name` unless asked.
+    - Whenever the query says "nation," include national metrics in the output.
+
+    ---
+
+    ## 2. Population & Source Tables
+
+    - **Demand default = Commercial + PAP** at every grain (national, segment, account). `data_867` UNION `data_867_pap` with `transaction_type = 'COM'` on the PAP branch. Never default to Commercial alone.
+    - **Sales / revenue / net sales / gross sales → Revenue table only.** Single source of truth. No other table may serve these metrics.
+    - Ex-factory vials accompany every actual-sales metric, sourced from the Revenue table.
+    - Product is **Fyarro**.
+
+    ---
+
+    ## 3. Time & Anchoring
+
+    - Anchor every window to the data, never to system date: `MAX(week_end_date)` for demand, `MAX(transaction_date)` for revenue, `MAX(call_date)` for calls.
+    - Restrict to the most recent *completed* period unless the user asks otherwise.
+
+    **Default windows:**
+
+    | Question type | Window | Grain of the time axis |
+    |---|---|---|
+    | Demand trend | 52 weeks | Weekly |
+    | Revenue / sales trend | 12 months | **Monthly** |
+    | Longitudinal trend (pivot) | 26 weeks | Weekly |
+
+    Longitudinal trend = pivot with accounts as rows and actual `week_end_date` values as column headers. Real dates only — never "Week 1". Each cell = that account's COM+PAP demand vials for that week. Build headers dynamically from the data. Account grain follows §1.
+
+    ---
+
+    ## 4. Business Days & Daily Averages
+
+    - Business days are computed **strictly at national level**, never derived from regional, tier, or segmented data.
+    - `daily_average = total / COUNT(DISTINCT CASE WHEN is_business_day = 1 THEN date END)` — denominator is always the national business-day count.
+
+    **Where daily averages are permitted:**
+
+    | Output grain | Daily average? |
+    |---|---|
+    | National | Yes |
+    | Segment / tier / region / area / geo / state / city / territory | Yes — divided by *national* business days |
+    | Account (parent or child) | **Never** — totals only |
+    | Any revenue / sales metric | **Never** |
+
+    **Period completeness (national and segment rows only):**
+
+    - Complete period → show period totals **and** daily averages.
+    - Incomplete period → show daily averages **and** total volume demand.
+    - Account rows → totals only, regardless of completeness.
+
+    **Business-day display:**
+
+    - Show the business-day count next to every time period in demand and budget output.
+    - Do **not** compute or display business days for revenue / sales output.
+
+    ---
+
+    ## 5. Growth & Comparisons
+
+    - Any "performance" question includes growth (% change vs. the prior comparable period).
+    - Pair every growth or percentage with the absolute value **of the same metric family** — demand growth with demand vials, revenue growth with revenue dollars.
+    - Prior = 0 and current > 0 → growth = **100%**.
+    - Prior = 0 and current = 0 → growth = **0%**.
+    - Prior is NULL → treat as 0.
+    - When growth is reported at any segmentation level (segment, tier, region, area, geography, account type, city, state, territory), also compute **national growth** and add a column flagging the segment as **Higher** or **Lower** than nation.
+    - The single anchor metric for every segment-vs-nation comparison is **daily average growth** (normalized by national business days). This applies to segment/tier aggregates. Account-grain rows are never compared this way — they carry total growth only.
+    - Default denominator for any share or "% of total" metric is **overall national demand**, unless the user specifies otherwise.
+
+    ---
+
+    ## 6. Account Status Definitions
+
+    All account-status metrics are at **child grain**.
+
+    **Qualifying order:** `valid_order = 1 AND qty_sold > 0`. An "ordering account" is a child with at least one qualifying order in the window.
+
+    **Dormant** — evaluated at week *W*:
+    - Zero qualifying orders across the trailing 8 weeks (W-8 … W-1), **and**
+    - Zero qualifying orders in week W.
+
+    **Reactivated** — evaluated at week *W*, all three must hold:
+    1. At least one qualifying order **before** the trailing 8-week window (prior order history exists), **and**
+    2. Zero qualifying orders across the trailing 8 weeks (W-8 … W-1), **and**
+    3. At least one qualifying order in week W.
+
+    Total span evaluated: 9 weeks.
+
+    **New account** — first-ever qualifying order falls in week W. A new account can **never** be classified as reactivated; condition (1) excludes it.
+
+    ---
+
+
+    **Rounding** — one rule: round (never truncate) every decimal result to **1 decimal place**.
+    - Daily averages → `123.4`
+    - Revenue / sales in $	Nearest whole integer — no decimals	$12346
+    - Percentages → `12.3%`
+    - All other decimal results	1 decimal	3.1
+
         Time Rules:
     
         If the user does not specify a time period, default to the most recent 8 weeks of available data.
@@ -1843,7 +2029,7 @@ USER QUERY (LATEST HUMAN MESSAGE)
         If the user asks for growth without specifying a timeframe, compute growth as Recent 8 Weeks (R8W) vs Prior 8 Weeks (P8W).
         If the user refers to sudden behavior, spike, drop, anomaly, or similar wording, perform the analysis using a 4-week time window.
         Always determine the latest time period using transaction_date, Retrieve the corresponding quarter_year or month_year from the row with the latest week_end_date or date.
-    Whenever any time period is involved (including but not limited to weekly averages), the output must explicitly include the time period boundaries, i.e., the start date and end date (e.g., week_start_date and week_end_date). (VERY IMPORTANT)
+        Every time-based result must identify its period — week grain outputs week_start_date and week_end_date, month grain outputs month_year only, quarter grain outputs quarter_year only, any other grain outputs start and end date — and month_start_date, month_end_date, quarter_start_date, and quarter_end_date are never displayed. (VERY IMPORTANT)
     When the user refers to **current, recent, last, or previous** month, quarter, or year, first determine the most recent available date using:
     
     max_week_end_date = MAX(week_end_date)
@@ -2324,8 +2510,9 @@ data_867 Rules:
         
             Dormant Addition Trend: dormant_additions(W) = weekly_dormant_accounts(W) - weekly_dormant_accounts(W - 1 week).
         
-
         Top 25 accounts = top 25 parent accounts ranked by total demand vials (commercial + PAP) from Jan 1, 2025 through the current date, sorted descending by demand vials.
+        Any "top account" query defaults to: top N parent accounts ranked by total demand vials (commercial + PAP), Jan 1, 2025 through current date, sorted descending. Override only if the user specifies a different grain or date range.
+        
         Reactivated Account Rules:
 
             QUALIFYING ORDER: a week counts as "ordered" only if it contains a row with
@@ -2392,41 +2579,133 @@ data_867 Rules:
         balance_to_go = net_sales_forecast/gross_sales_forecast(revenue_forecast Table) - net_sales/gross_sales(revenue table) — always compute it this way, and never label a value "balance to go" unless it follows this exact formula.
  
     Default Rules:
-        Display both period-level metrics and daily average metrics ONLY when the period is complete. If the period is incomplete, display only daily average metrics with total Volume demand., where Daily Average = Total / COUNT(DISTINCT CASE WHEN is_business_day = 1 THEN date END computed at NATIONAL level) (VERY IMPORTANT).
-        All business day calculations MUST be performed strictly at the national level only, and must NEVER be derived from any regional, tier, or segmented data.
-        If the user does not explicitly specify a total demand denominator, assume overall national demand as the default denominator.
-        For growth metrics, if the previous period value is 0 and the current period value is greater than 0, the growth must be reported as 100%.
-        All child entities roll up to their respective parent entities.
-        If the user does not explicitly specify child or parent level, default all queries and aggregations to the parent entity level. (VERY IMPORTANT)
-        Always accompany any growth metric or percentage value with the corresponding absolute volume demand value.
-        Whenever the query references “nation,” compute the national-level metrics and include them in the output.
-        Whenever a user asks about performance, always calculate and include the growth (percentage change vs the previous comparable period)
-        Our Product is fyarro.
-        For every time period in the output, explicitly display the corresponding number of business days
-        Whenever growth is calculated for any segmentation level (e.g., segment, tier, region, area, geography, account type, city, state, or territory), also calculate nation growth and add a column indicating whether the segment is performing Higher or Lower than the nation.
-        Always perform aggregations using ID fields (e.g., child_id, parent_id) for accuracy, and include the corresponding names in the final output.
-        All segment vs nation growth comparisons must be strictly based on Daily Average Growth (growth normalized by national business days), which serves as the single anchor metric for determining relative performance.
-        If asked about demand by default give national demand don't group by parent_id or parent_name.
-        Do not automatically restrict calculations to the **most recent completed period** unless the user explicitly requests it.
-        When displaying the daily average metric, always round and format the value to exactly 1 decimal place.
-        Every demand metric must be named demand_vials_<direction><period> (e.g., demand_vials_r4w for recent 4 weeks) — never display demand without this exact prefix and suffix format.
-        Every budget metric must be named budget_vials_<direction><period> (e.g., budget_vials_r4w for recent 4 weeks) — never display demand without this exact prefix and suffix format.
-        Every revenue metric must be named _$_<direction><period> (e.g., gross_sales_$_r4w for recent 4 weeks) — never display revenue without this exact prefix and suffix format.
-        Default to the child account for all account-level queries. Exception: for any Top 25, Top 75, or account tier/segment query, always anchor to the parent account instead — never the child.
-        Whenever information is displayed at the account level, only display Commercial + PAP metrics. Don't default to Commercial
-        Whenever a query is at the account level, never display daily average metrics — always display total (aggregate) metrics instead, unless the user explicitly instructs otherwise.
-        All revenue and sales values must be reported to one decimal place (e.g., $12345.6). No exceptions — round, do not truncate.
-        For any trend-level question, default to the most recent 52 weeks of data for account level,  demand and revenue/sales, unless a different time period is explicitly specified.
-        Any query involving sales, revenue, net sales, or gross sales must anchor to the Revenue table as the single source of truth — no other table should be used for these metrics.
-        Don't display/calculate the number of Business Days for revenue/sales related queries
-        Sales/revenue trend data must always be shown broken down by month.
-        An ordering account is the one whose valid_order=1 and qty_sold>0
-        Whenever displaying actual sales metrics, always include the corresponding ex-factory vials quantity alongside them.
-        
-        A reactivated account is defined as a child account that was previously dormant (no order in the last 8 weeks) and has now placed an order, moving it out of dormant status.
-        If a result is a decimal number, round it to one decimal place before presenting it (e.g., 3.14159 → 3.1).
-        Longitudinal trend = pivoted view with accounts as rows and the actual week_end_date values as column headers (real dates, never generic labels like "Week 1"). Each cell shows that account's demand vials (commercial + PAP) for that week. Account level follows query context. Default window is the most recent 26 weeks, anchored to MAX(week_end_date) from the data itself. Build the pivot dynamically so column headers are the real dates — never static positional labels.
-    
+    ## 0. Precedence
+
+    When rules conflict, resolve top-down:
+
+    1. Explicit user instruction
+    2. Metric-specific definition (§6, §7)
+    3. Grain ladder (§1)
+    4. Defaults in this document
+
+    ---
+
+    ## 1. Grain
+
+    Resolve output grain in this order. First match wins.
+
+    | # | Condition | Grain |
+    |---|---|---|
+    | 1 | User names a grain explicitly | As stated |
+    | 2 | Account-status metric — breadth, depth, new activation, dormancy, reactivation | `child_id` |
+    | 3 | Reach or call frequency | `parent_id` |
+    | 4 | Any account ranking query — "top N accounts" (Top 10 / Top 25 / Top 75 / "top accounts by ...") **or** "worst / bottom / lowest N accounts" (bottom 25, worst performers, lowest-volume accounts, underperforming accounts) — plus account tier / account segment | `parent_id` — always roll up to the parent account level by default |
+    | 5 | Any other account-level question | `child_id` |
+    | 6 | Everything else (incl. plain "demand" questions) | **National — no account grouping at all** |
+
+    Rules:
+
+    - Child entities roll up to their parent.
+    - Aggregate on ID fields (`child_id`, `parent_id`); carry the corresponding name into the output.
+    - A plain demand question returns national demand. Do **not** group by `parent_id` / `parent_name` unless asked.
+    - Whenever the query says "nation," include national metrics in the output.
+
+    ---
+
+    ## 2. Population & Source Tables
+
+    - **Demand default = Commercial + PAP** at every grain (national, segment, account). `data_867` UNION `data_867_pap` with `transaction_type = 'COM'` on the PAP branch. Never default to Commercial alone.
+    - **Sales / revenue / net sales / gross sales → Revenue table only.** Single source of truth. No other table may serve these metrics.
+    - Ex-factory vials accompany every actual-sales metric, sourced from the Revenue table.
+    - Product is **Fyarro**.
+
+    ---
+
+    ## 3. Time & Anchoring
+
+    - Anchor every window to the data, never to system date: `MAX(week_end_date)` for demand, `MAX(transaction_date)` for revenue, `MAX(call_date)` for calls.
+    - Restrict to the most recent *completed* period unless the user asks otherwise.
+
+    **Default windows:**
+
+    | Question type | Window | Grain of the time axis |
+    |---|---|---|
+    | Demand trend | 52 weeks | Weekly |
+    | Revenue / sales trend | 12 months | **Monthly** |
+    | Longitudinal trend (pivot) | 26 weeks | Weekly |
+
+    Longitudinal trend = pivot with accounts as rows and actual `week_end_date` values as column headers. Real dates only — never "Week 1". Each cell = that account's COM+PAP demand vials for that week. Build headers dynamically from the data. Account grain follows §1.
+
+    ---
+
+    ## 4. Business Days & Daily Averages
+
+    - Business days are computed **strictly at national level**, never derived from regional, tier, or segmented data.
+    - `daily_average = total / COUNT(DISTINCT CASE WHEN is_business_day = 1 THEN date END)` — denominator is always the national business-day count.
+
+    **Where daily averages are permitted:**
+
+    | Output grain | Daily average? |
+    |---|---|
+    | National | Yes |
+    | Segment / tier / region / area / geo / state / city / territory | Yes — divided by *national* business days |
+    | Account (parent or child) | **Never** — totals only |
+    | Any revenue / sales metric | **Never** |
+
+    **Period completeness (national and segment rows only):**
+
+    - Complete period → show period totals **and** daily averages.
+    - Incomplete period → show daily averages **and** total volume demand.
+    - Account rows → totals only, regardless of completeness.
+
+    **Business-day display:**
+
+    - Show the business-day count next to every time period in demand and budget output.
+    - Do **not** compute or display business days for revenue / sales output.
+
+    ---
+
+    ## 5. Growth & Comparisons
+
+    - Any "performance" question includes growth (% change vs. the prior comparable period).
+    - Pair every growth or percentage with the absolute value **of the same metric family** — demand growth with demand vials, revenue growth with revenue dollars.
+    - Prior = 0 and current > 0 → growth = **100%**.
+    - Prior = 0 and current = 0 → growth = **0%**.
+    - Prior is NULL → treat as 0.
+    - When growth is reported at any segmentation level (segment, tier, region, area, geography, account type, city, state, territory), also compute **national growth** and add a column flagging the segment as **Higher** or **Lower** than nation.
+    - The single anchor metric for every segment-vs-nation comparison is **daily average growth** (normalized by national business days). This applies to segment/tier aggregates. Account-grain rows are never compared this way — they carry total growth only.
+    - Default denominator for any share or "% of total" metric is **overall national demand**, unless the user specifies otherwise.
+
+    ---
+
+    ## 6. Account Status Definitions
+
+    All account-status metrics are at **child grain**.
+
+    **Qualifying order:** `valid_order = 1 AND qty_sold > 0`. An "ordering account" is a child with at least one qualifying order in the window.
+
+    **Dormant** — evaluated at week *W*:
+    - Zero qualifying orders across the trailing 8 weeks (W-8 … W-1), **and**
+    - Zero qualifying orders in week W.
+
+    **Reactivated** — evaluated at week *W*, all three must hold:
+    1. At least one qualifying order **before** the trailing 8-week window (prior order history exists), **and**
+    2. Zero qualifying orders across the trailing 8 weeks (W-8 … W-1), **and**
+    3. At least one qualifying order in week W.
+
+    Total span evaluated: 9 weeks.
+
+    **New account** — first-ever qualifying order falls in week W. A new account can **never** be classified as reactivated; condition (1) excludes it.
+
+    ---
+
+
+    **Rounding** — one rule: round (never truncate) every decimal result to **1 decimal place**.
+    - Daily averages → `123.4`
+    - Revenue / sales in $	Nearest whole integer — no decimals	$12346
+    - Percentages → `12.3%`
+    - All other decimal results	1 decimal	3.1
+
     Time Rules:
 
     If the user does not specify a time period, default to the most recent 8 weeks of available data.
@@ -2440,7 +2719,7 @@ data_867 Rules:
     If the user asks for growth without specifying a timeframe, compute growth as Recent 8 Weeks (R8W) vs Prior 8 Weeks (P8W).
     If the user refers to sudden behavior, spike, drop, anomaly, or similar wording, perform the analysis using a 4-week time window.
     Always determine the latest time period using transaction_date, Retrieve the corresponding quarter_year or month_year from the row with the latest week_end_date or date.
-Whenever any time period is involved (including but not limited to weekly averages), the output must explicitly include the time period boundaries, i.e., the start date and end date (e.g., week_start_date and week_end_date). (VERY IMPORTANT)
+    Every time-based result must identify its period — week grain outputs week_start_date and week_end_date, month grain outputs month_year only, quarter grain outputs quarter_year only, any other grain outputs start and end date — and month_start_date, month_end_date, quarter_start_date, and quarter_end_date are never displayed. (VERY IMPORTANT)
 When the user refers to **current, recent, last, or previous** month, quarter, or year, first determine the most recent available date using:
 
 max_week_end_date = MAX(week_end_date)
@@ -2781,9 +3060,6 @@ are PREFERRED for “latest / most recent” questions
 • Do NOT reject a query because it is not optimal or not written in the same style as examples.
 Only reject for correctness, safety, schema mismatch, syntax errors, or explicit intent mismatch.
 
-If the user does not explicitly specify campus or parent level, default all queries and aggregations to the campus entity level. (VERY IMPORTANT)
-
-month_year and quarter_year are columns present in both data_867 and data_DDD.
 
 ────────────────────────
 INPUT CONTEXT
@@ -3031,8 +3307,6 @@ def sql_executor(state: AgentState):
     result_df = result_df[~result_df.apply(lambda row: row.astype(str).str.strip().eq("UNKNOWN").any(), axis=1)]
     result_df = result_df[~result_df.apply(lambda row: row.astype(str).str.strip().eq("Unassigned").any(), axis=1)]
     result_df = result_df[~result_df.apply(lambda row: row.astype(str).str.strip().eq("-").any(), axis=1)]
-    result_df = result_df[~result_df.apply(lambda row: row.astype(str).str.strip().eq("FF99").any(), axis=1)]
-    result_df = result_df[~result_df.apply(lambda row: row.astype(str).str.strip().eq("FF9999").any(), axis=1)]
     result_df = result_df[
     ~result_df.apply(
         lambda row: (
@@ -3089,13 +3363,13 @@ def sql_executor(state: AgentState):
 #         - Both total growth AND daily average present → periods are complete.
 #         - Only daily average present → at least one period is incomplete (flag it, e.g., "the week ending March 6 shows only 1 business day and should not be read as a true demand drop").
 
-#         REGIONAL / TIER / CAMPUS BREAKDOWN (when applicable)
-#         - Name the top-performing and bottom-performing region, tier, or campus with their figures.
+#         REGIONAL / TIER / child BREAKDOWN (when applicable)
+#         - Name the top-performing and bottom-performing region, tier, or child with their figures.
 #         - Flag concentration risk if 1–2 entities drive a disproportionate share.
 
 #         ACCOUNT HEALTH & ADOPTION (when applicable)
 #         - State whether health/adoption is improving, stable, or deteriorating.
-#         - Anchor to a specific date range and metric (e.g., "adoption within target campuses rose from 42% to 58% between Q3 and Q4 2025").
+#         - Anchor to a specific date range and metric (e.g., "adoption within target childes rose from 42% to 58% between Q3 and Q4 2025").
 
 #         MARKET SHARE (when applicable)
 #         - State whether Rytelo is gaining or losing share vs. Reblozyl, with the exact share % and date.
@@ -3182,9 +3456,6 @@ You are provided with:
 Query Decomposer Output:
 {query_decomposer_output}
 
-SQL Generator Output (final SQL that was executed):
-{sql_generator_output}
-
 SQL Executor Output:
 {result_df}
 
@@ -3197,9 +3468,15 @@ Always format section labels exactly as: **Overview:**, **Key Findings / Takeawa
 
 Limit each bullet point to a maximum of 2 sentences and 40 words. Lead with the single most important number or insight. Drop secondary comparisons, qualifications, and date ranges unless they are the core point. Never repeat a figure already stated in a prior bullet.
 
-0. NEVER generate or guess any ID (campus_id, region_id, geography_id, or any other identifier) — always anchor strictly to IDs present in the data. Instead of ID's always display the name. (VERY IMPORTANT). I will punish you if you reference any values except from the values in the input provided.
+BUSINESS LANGUAGE ONLY: Never expose how the data was built. Terms like valid order, transaction type, qualifying order, flag, filter, table, column, or row are strictly forbidden. State what was measured, never how it was scoped.
 
-1. ABSOLUTE DISPLAY RULE — NAMES ONLY, NEVER IDs: Every reference to a campus, territory, or region in the output — in every section, every bullet, and every sentence — MUST use the human-readable name field only: campus_account_name, campus_territory, and campus_region. The corresponding ID fields (campus_id, campus_territory_id, campus_region_id, parent_id, or any other _id field) are strictly forbidden from appearing anywhere in the output. This is non-negotiable and applies to narrative text, comparisons, rankings, and callouts without exception. If the name is not available in the result set, omit the entity entirely — never substitute or display an ID as a fallback.
+NO REQUESTER FRAMING: Never narrate who asked for the analysis or why. Phrases such as "Leadership wanted", "The business asked", "Stakeholders requested", "As requested" are banned outright — delete them, do not rephrase. Open every statement on the subject and the number.
+
+SENTENCE COHERENCE: Every sentence must read as natural business English a commercial leader would say aloud. Never stack scoping qualifiers into contradictory phrases — "Commercial demand with commercial-only PAP" is invalid; "Total demand" is correct. If a metric needs more than one qualifier to describe, the qualifiers are mechanics — drop them.
+
+0. NEVER display any id fields in the output (for eg child_id, parent_id, region_id, geography_id, or any other identifier)
+
+1. ABSOLUTE DISPLAY RULE — NAMES ONLY, NEVER IDs: Every reference to a child, territory, or region in the output — in every section, every bullet, and every sentence — MUST use the human-readable name field only: child_account_name, child_territory, and child_region. The corresponding ID fields (child_id, child_territory_id, child_region_id, parent_id, or any other _id field) are strictly forbidden from appearing anywhere in the output. This is non-negotiable and applies to narrative text, comparisons, rankings, and callouts without exception. If the name is not available in the result set, omit the entity entirely — never substitute or display an ID as a fallback.
 
 2. Business question
 Open by framing what business question this analysis answers and why it matters — without using the phrase "The analysis addresses" or "This answers a straightforward question."
@@ -3222,6 +3499,13 @@ If the result set is empty, clearly state that no activity or records were found
 8. CRITICAL RULE: Always display geography/region names instead of geography or region IDs in visualizations.
 
 ---
+
+LANGUAGE & FACTUALITY
+- Write in plain, simple English. Short sentences. No jargon, no hedging, no filler.
+- State only what the data shows. Numbers, directions, and time periods — nothing else.
+- Do not interpret, explain causes, speculate on drivers, or recommend actions.
+- No superlatives or qualitative judgments ("strong", "concerning", "impressive") unless they are a computed fact from the dataframe.
+- Every figure you cite must appear in the result set. If it isn't there, don't say it.
 
 TONE AND STYLE:
 - Executive register: direct, precise, and confident
@@ -3261,7 +3545,7 @@ bullet is strictly superior to five bullets that recycle the same subject.
   The following narrative angles ALL describe the same subject and
   MUST be merged into one bullet — they are NOT distinct insights:
     • Ranking angle        ("Tier 1 is highest, Tier 3 is lowest")
-    • Absolute count angle ("Tier 3 has the most absolute active campuses")
+    • Absolute count angle ("Tier 3 has the most absolute active childes")
     • Trend angle          ("Adoption declines from Tier 1 to Tier 3")
     • Gap angle            ("23pp spread between highest and lowest")
     • Calendar angle       ("Business days fell but decline persists")
@@ -3315,14 +3599,14 @@ bullet is strictly superior to five bullets that recycle the same subject.
           Tier 2 at 35% (213/610) and Tier 3 at 25% (368/1,498),
           a 23pp gap."
        • "In absolute terms, Tier 3 generated the largest active
-          campuses at 368, but its larger base of 1,498 diluted
+          childes at 368, but its larger base of 1,498 diluted
           conversion, leaving it 23pp below Tier 1."
        • "Adoption declines from 48% to 35% to 25% as target base
           expands from 268 to 610 to 1,498, showing scale is
           increasing faster than activation."
 
     ✅ CORRECT — entire subject merged into one dense bullet:
-       • "Tier 1 leads adoption at 48% (128/268 campuses), ahead of
+       • "Tier 1 leads adoption at 48% (128/268 childes), ahead of
           Tier 2 at 35% (213/610) and Tier 3 at 25% (368/1,498) —
           a 23pp spread — with Tier 3 holding the largest base at
           1,498 and highest absolute active count at 368, yet the
@@ -3445,22 +3729,23 @@ OUTPUT FORMAT:
 Present the summary in exactly TWO clearly labeled sections. Use the following structure:
 
 Overview
-A single sentence framing the business question and scope.
+A single factual sentence framing the business question and scope — no interpretation.
+MANDATORY: if the question involves demand in any form, the Overview must state whether the
+figures are Commercial demand only or Commercial + PAP demand. No exceptions — never leave
+the demand basis implicit or unstated.
 
 Key Findings / Takeaways
-This single section consolidates everything that would previously have been
-split across Findings, Key Takeaways, and Opportunity / Implication. It must
-contain a MINIMUM of 1 and a MAXIMUM of 5 bullets, where each bullet covers
-one distinct subject end-to-end: the result (exact numbers), what it means
-(standing, pattern, gap), and — where the data supports it — the actionable
-implication, all woven into the same bullet rather than spread across
-multiple bullets.
+One consolidated section replacing Findings, Key Takeaways, and Opportunity /
+Implication. MINIMUM 1, MAXIMUM 5 bullets. Each bullet covers one distinct
+subject end-to-end: the result (exact numbers), the pattern or gap it shows,
+and — only where the data supports it — the actionable implication. Never
+split these across bullets.
 
-- Lead with the most significant result — the single metric showing the largest absolute or relative change.
-- Always begin by explicitly stating the reporting period(s) used in the analysis (e.g., P3M vs R3M, R13W, MTD, QTD).
-- Always report National metrics first, followed by geography- and tier-level metrics where applicable.
-- Where relevant, a bullet should call out the most meaningful gap or contrast in the data — merged with its underlying numbers, never as a separate restatement.
-- Actionable implications must be grounded strictly in the data with no speculation, and must be attached to the bullet carrying the relevant numbers. The single most important place for the business to focus attention should be identifiable from the final bullet.
+- Strictly no interpretation of the results — report only what the data shows.
+- Open the first bullet by naming the reporting period(s) used (e.g., P3M vs R3M, R13W, MTD, QTD), then lead with the most significant result — the metric with the largest absolute or relative change.
+- Report National metrics first, then geography- and tier-level metrics where applicable.
+- Call out the most meaningful gap or contrast alongside its own numbers — never as a separate restatement.
+- The final bullet should make the single most important place to focus attention identifiable from the data alone.
 
 ── HARD RULES FOR NUMERIC REPORTING ──────────────────────────────────────────
 
@@ -3815,19 +4100,15 @@ SQL Executor Output Descriptive Stats:
 SUMMARY-DRIVEN VISUALIZATION RULE — METRIC PRIORITIZATION
 {summary}
  
-Before writing any Plotly code, parse the entire summary and extract every metric, KPI, figure, percentage, trend, and named entity from the Findings, Key Takeaways, and Opportunities sections. This extracted list is your visualization brief — it overrides all default data-driven decisions. If the data has 50 columns but the summary mentions 6 metrics, visualize those 6 only.
- 
-METRIC HIERARCHY IN CODE:
-- Findings → primary Y-axis and dominant visual elements (tallest bars, main lines)
-- Key Takeaways → reference lines and direct annotations on the chart — never buried in tooltips
-- Opportunities → gap overlays, delta annotations, or target markers in a visually distinct color — always showing the gap between current state and potential, not just raw numbers
- 
-HARD RULES:
-1. If a Finding and an Opportunity reference the same entity, they MUST appear on the same chart so the gap is immediately visible
-2. Every metric name on axes, hovers, and annotations must match the summary word-for-word ("Net Revenue" stays "Net Revenue" — never "Sales" or "Revenue")
-3. Every figure, percentage, and named comparison from the summary MUST appear somewhere in the visualization — as a bar, line, reference line, annotation, or hover value. A metric present in the summary but absent from the chart is a bug
-4. Before finalizing the code, audit every bullet in Findings, Key Takeaways, and Opportunities and confirm each one has a visual representation. Only return code when all metrics are accounted for
- 
+Read the summary and identify the ONE metric it leads with. That metric is the subject of the chart.
+
+A second metric may join it only when the summary frames it as a rate of change on the first (growth %, share %). In that case the base metric is bars or a line, and the rate goes on a secondary axis.
+
+Everything else in the summary stays in the summary. Do NOT attempt to fit every figure, ranking, or takeaway into the chart. A chart carrying one idea clearly beats a chart carrying five badly, and the summary text is already shown directly above the chart.
+
+- Use the summary's exact metric wording for axis titles and legend names ("Net Revenue" stays "Net Revenue", never "Sales").
+- Rankings, standings, and implications ("weakest region", "primary focus area") are narrative, not chart elements. Never render them as annotations, callouts, arrows, or reference lines.
+
 Assume the SQL output will be reconstructed into a Pandas DataFrame named df.
  
 ---
@@ -3919,49 +4200,21 @@ In addition to the above, refine intent using semantic signals from the question
  
 ---
  
-## ADVANCED CHART OVERRIDES (ADDED - HIGH PRIORITY)
- 
-These rules OVERRIDE basic rules when applicable:
- 
-1. Trend + Multiple Categories:
-   → Use MULTI-LINE chart (color by category)
- 
-2. Contribution / Share:
-   → Prefer STACKED BAR
-   → If time present → STACKED AREA
- 
-3. Market Share:
-   → ALWAYS convert to percentage if possible
-   → Use:
- 
-   * STACKED AREA (time)
-   * 100% STACKED BAR (snapshot)
- 
-4. Performance vs Target:
-   → Prefer grouped bar (actual vs target)
-   → If unclear → fallback to bar chart
- 
-5. Multi-dimensional (2 categorical variables):
-   → Prefer HEATMAP (if dense data)
-   → Else GROUPED BAR
- 
-6. Adoption / Health Categories:
-   → STACKED BAR (if categorical states exist)
- 
-7. Consistency / Variability:
-   → If enough data → BOX PLOT
-   → Else fallback to bar/line
- 
-8. Tier-wise or Segment Distribution (part-to-whole, no time axis):
-   → ALWAYS use PIE CHART when ≤ 6 segments and the intent is "what share does each segment represent"
-   → Show percentage labels directly on slices, not just in hover
- 
-9. Cross-entity Distribution Comparison (e.g., relmora vs zynava tier-wise):
-   → ALWAYS use percentage proportions (%) not absolute values (mg) on the Y-axis
-   → Use GROUPED BAR with percentage labels so the comparison is meaningful across entities with different total volumes
- 
----
- 
+## CHART OVERRIDES (HIGH PRIORITY)
+
+These override the basic rules when applicable. Every one of them caps complexity — respect the caps.
+
+1. Trend across categories -> MULTI-LINE, maximum 4 lines. If more series exist, keep the top 4 by latest value and drop the rest.
+2. Part-to-whole, no time axis, <= 6 segments -> PIE CHART.
+3. Contribution or share across time -> STACKED AREA (time) or 100% STACKED BAR (snapshot).
+4. Market share -> ALWAYS percentage, never absolute units. If total market volume is unavailable, return NO_VISUALIZATION.
+5. Actual vs target/budget -> GROUPED BAR, exactly 2 series.
+6. Two categorical dimensions -> GROUPED BAR on the primary dimension, top 8 categories only. Do NOT use heatmaps.
+7. Cross-entity distribution comparison -> GROUPED BAR in % so entities of different total size stay comparable.
+8. Consistency or variability -> BOX PLOT only when each group has 20+ points, otherwise fall back to bar or line.
+
+If two chart types both work, always choose the simpler one.
+
 ## GROWTH RULE (VERY IMPORTANT)
  
 If any growth-related column exists (growth, %, change, WoW, MoM, QoQ, YoY):
@@ -4005,138 +4258,31 @@ The chart MUST display exactly the metric the user asked for — never substitut
  
 ---
  
-## VISUAL ENHANCEMENT RULES (ADDED)
- 
-When generating charts, apply:
- 
-* Sort categorical axes in descending order (for comparison charts)
-* Highlight latest time point (for trend charts)
-* Limit categories to top 10 if too many values
-* Use consistent color grouping for categories
-* Avoid clutter and over-plotting
-* Ensure readability over aesthetics
-* CRITICAL RULE: Always display geography/region names instead of geography or region IDs in visualizations.
-* All visualizations must display visible data labels for every data point.
-* For pie charts: always show both the category label and the percentage value directly on each slice using textinfo="label+percent".
- 
----
- 
-## SPECIAL HANDLING RULES
- 
-* Growth queries:
-  → Always prioritize showing trend + growth together
- 
-* Recent period queries:
-  → Focus on latest available time window
- 
-* Regional queries:
-  → Ensure comparisons are clearly distinguishable
- 
-* Market share queries:
-  → Prefer percentage representation over absolute values
- 
-* Multi-level queries:
-  → Prefer grouped or heatmap visualization
- 
-* Growth Questions (Single-Row Output)
- → If the question is about growth and the output has only 1 row: always render a bar chart. Show bars for the previous and current period using whichever metrics are available — prefer both total growth and daily average growth side by side; fall back to daily average growth alone if total is absent. Never skip the chart.
- 
----
- 
-## PLOTLY RULES (MANDATORY)
- 
-* Use Plotly only (plotly.express or plotly.graph_objects)
-* Output ONLY valid Python code defining `fig`
-* No explanations, no comments, no markdown
-* No Streamlit code
- 
----
- 
-## LAYOUT / WIDTH RULE (CRITICAL)
- 
-* Plotly `width` MUST be a numeric value (e.g., 600, 800, 1000)
-* NEVER use 'stretch' or 'content' inside fig.update_layout()
-* NEVER use `use_container_width`
-* The rendering layer (e.g., Streamlit) will handle container sizing
- 
----
- 
-## HOVERTEMPLATE RULES (MANDATORY)
- 
-* NEVER use Python `%` string formatting
-* ALWAYS use f-strings
-* Preserve Plotly placeholders like `%{{x}}`, `%{{y}}`
-* Escape placeholders in f-strings:
-  Example: f"Region=%{{x}}<br>Value=%{{y}}"
-* Do NOT mix `%` formatting with Plotly placeholders
-* Every value representing growth, rate, or percentage MUST include the '%' symbol—no exceptions, no alternative formats.
----
- 
-PLOTLY VISUALIZATION RULES — ALWAYS ENFORCE ALL:
- 
-RULE 1 — PERIOD COMPARISONS: Never display a chart that only compares the number of days between a current period and a previous period. Every period comparison MUST always include all three metrics: total volume sales, daily average sales, and growth change (%).
- 
-RULE 2 — NO IDS ON CHARTS: Never display raw ID fields anywhere on a chart — no axes, labels, legends, hovers, or titles. This includes campus_id, campus_region_id, campus_territory_id, and parent_id. Always resolve to their human-readable name fields before plotting: campus_account_name, campus_region, campus_territory, parent_account_name. If a name is unavailable, show "Unknown" — never fall back to the numeric ID.
- 
-RULE 3 — NO HH:MM:SS TIMESTAMPS: Never render timestamps in HH:MM:SS format on any axis, tick, label, or hover. Always strip time components when only the date is meaningful. Use human-readable date formats appropriate to the data granularity (e.g. "Jan 2024", "Q1 2024", "12 May"). Use Plotly's tickformat or pre-format the date column before plotting.
-  Implementation: Before plotting, convert date columns with:
-    df['date'] = pd.to_datetime(df['date']).dt.strftime('%b %Y')   # for monthly
-    df['date'] = pd.to_datetime(df['date']).dt.strftime('%d %b %Y')  # for daily
-  AND set fig.update_xaxes(tickformat="%b %Y") as a backup.
- 
-RULE 4 — NO OVERLAPPING DATA LABELS: On any chart combining bar and line traces, data labels must never overlap each other or any other chart element. Always set textposition="outside" for bar labels, increase layout.height for dense data, set cliponaxis=False, and add sufficient layout.margin.t so that labels above the highest bar are never clipped or collide with adjacent labels.
-  Additional enforcement:
-    - For multi-line charts with many data points: alternate label positions ("top center" and "bottom center") by trace so labels from different series never collide
-    - Set a minimum chart height of 500px; increase to 650px+ when 3 or more traces share the same x-axis range
-    - For bar+line combo charts: always offset bar labels (textposition="outside") and line labels (textposition="top center") with a minimum vertical gap of 15px between any two labels
- 
-RULE 5 — HOVER TOOLTIPS MUST BE FULLY VISIBLE: Hover tooltips must never be partially cut off by the chart boundary, browser edge, or any container. Always set generous layout margins on all sides (minimum 60px), use hoverlabel=dict(namelength=-1) to prevent label truncation, set layout.hovermode="closest", and never place the chart inside a container with overflow: hidden. For data points near chart edges, ensure tooltips flip inward rather than getting clipped.
- 
-Rule 6 - Never place any free-floating text, callouts, or arrow annotations inside the chart area that describe, interpret, or editorialize a data point — only numeric labels, axis titles, axis ticks, a legend, and reference line name labels sitting directly on their line are permitted.
- 
-Rule 7 - Whenever the query involves a trend, growth, or change over time, always default to a line chart. NEVER use a stacked bar chart when the intent is to show how values change across time periods. A stacked bar with time on the X-axis is only acceptable when the explicit goal is part-to-whole composition at each time point (e.g., "what share does each tier contribute each month"), not for showing trends.
- 
-Rule 8 - Never let data labels overlap — always stagger positions ("top center" / "bottom center"), ensure a minimum 15px gap between any two labels, and increase chart height when traces are dense.
- 
-RULE 9 — NO LABELS OUTSIDE CHART BOUNDS: Data labels must never be clipped or rendered outside the visible chart area. Always:
-  - Set layout.margin.t to at least 80px to prevent top labels from being cut off
-  - Set cliponaxis=False on all traces
-  - For bar charts with tall bars, reduce font size of labels to 10px rather than letting them overflow
-  - Test that the highest data label has at least 40px of clearance below layout.margin.t
- 
-RULE 10 — NO DUPLICATE OR BLURRED ENDPOINTS ON LINE CHARTS: When rendering line charts, never duplicate the final data point. Ensure:
-  - The data passed to the chart has no duplicate rows on the time axis (deduplicate with df.drop_duplicates(subset=[time_col]) before plotting)
-  - Do not add a separate scatter trace on top of a line trace for the last point unless it is intentionally styled differently (e.g., a highlighted endpoint marker); if doing so, use a distinct marker symbol and ensure it does not visually blur the line endpoint
-  - Set line.simplify=False to prevent Plotly's rendering simplification from creating visual artifacts at endpoints
- 
-RULE 11 — NO REDUNDANT TIME PERIOD LABELS IN TABLE ROWS: When the chart or associated table has a time period column (e.g., "Period", "Month", "Quarter"), do not repeat the same period label on every row of the table if the chart already shows the time axis. If the period is the same for all rows in a grouped/filtered view, show it once in the chart title or as a subtitle annotation — not as a repeated column value in every row.
- 
-RULE 12 — MARKET SHARE MUST SHOW PERCENTAGE: Any chart where the user asks for "market share", "share", "% share", or "proportion" MUST display percentage values on the Y-axis and in data labels, not raw mg or unit volumes. Convert to percentage before plotting:
-  df['relmora_share_pct'] = df['relmora_total_mg'] / (df['relmora_total_mg'] + df['zynava_total_mg']) * 100
-  If total market volume is unavailable, return NO_VISUALIZATION rather than showing misleading absolute values as market share.  
+## SIMPLICITY RULES (MANDATORY)
 
-RULE 13 — ALWAYS INITIALIZE FROM df FIRST: The very first executable line of every visualization must be plot_df = df.copy() — never reference plot_df, df, or any derived DataFrame before this line exists, and never assume df has been renamed or pre-assigned outside the visualization code block.
-  
-Rule 14 - Never render reference lines as full-width horizontal dashed lines spanning the entire chart. They collapse into an unreadable stack. Use annotations, markers, or point-specific indicators instead.
-  
-Rule 15 - Never add interpretive commentary, business insights, leadership callouts, or analytical conclusions as text annotations directly on the chart. The chart must contain only: titles, axis labels, legend entries, and data labels. All narrative text belongs outside the visualization.
-  
-Rule 16 - Every chart element — titles, bars, lines, and annotations — must have sufficient padding and margin so nothing overlaps or crowds another element. Use margin, pad, and standoff in the layout; offset data labels with textposition and textfont; push axis titles away from tick labels using title_standoff. Crowded or overlapping elements are a rendering failure.
+The chart must be readable in three seconds. Enforce every rule below.
 
-Rule 17: RULE 17 — LEGEND PLACEMENT (UPDATED): Always position the legend below the chart, never on the right side. Use:
-        pythonlayout.legend=dict(
-            orientation="h",
-            yanchor="top",
-            y=-0.2,
-            xanchor="center",
-            x=0.5
-        )
+1. ONE MESSAGE PER CHART. Maximum 2 metrics and maximum 4 series. If the data supports more, plot the most important ones — the full detail is already shown in the results table beneath the chart.
+2. TOP N ONLY. Never plot more than 10 categories. Sort descending by value, keep the top 10, and add "(Top 10)" to the title when you trim.
+3. NAMES, NEVER IDS. Never place child_id, parent_id, campus_id, or any raw ID on an axis, label, legend, hover, or title. Always resolve to child_name, parent_name, region, account_type. If no name exists, show "Unknown" — never fall back to the ID.
+4. NO CHART FURNITURE. No annotations, callouts, arrows, reference lines, target lines, or free-floating text of any kind. The only permitted text is: chart title, axis titles, tick labels, legend entries, and data labels.
+5. NO STYLING CODE. Do NOT set colors, fonts, height, width, margins, legend position, tickangle, textposition, textfont, hovermode, or templates. The rendering layer applies all presentation deterministically after your code runs, and anything you set there will be overwritten or will conflict.
+6. TIME MEANS LINE. Trend, growth, momentum, or change over time -> line chart. Never a stacked bar across time unless the explicit ask is composition at each time point.
+7. TIME AXIS FOLLOWS THE RESULT GRAIN, NOT THE COLUMN TYPE. A monthly result still contains week_end_date because the SQL is required to emit period boundaries. Pick the time column by counting distinct values: if month_year and week_end_date have the SAME number of distinct values there is one row per month, so plot month_year. If week_end_date has MORE distinct values the grain is weekly, so plot week_end_date. Same test for quarter_year and year. Never plot week_end_date on a monthly, quarterly or yearly result.
+7a. NEVER MIX GRANULARITIES and never emit HH:MM:SS on a time axis.
+8. DEDUPLICATE. Call plot_df = plot_df.drop_duplicates() before plotting a time series so lines never double back on themselves.
+9. START FROM df. The first executable line is always plot_df = df.copy(). Never reference plot_df or any derived frame before that line.
+10. GROWTH ON A SECOND AXIS. When a growth/%/change column is plotted next to a volume column, use make_subplots(specs=[[{{"secondary_y": True}}]]) and place growth on secondary_y=True. Never hand-assign yaxis='y2'.
+11. PERIOD COMPARISONS. A two-period comparison must show total volume, daily average, and growth % — never a bar chart of day counts.
+12. SINGLE-ROW GROWTH. If the question is about growth and the result has one row, still render a bar chart: previous vs current period, preferring total and daily average side by side. Never skip the chart.
+13. HOVERTEMPLATE SYNTAX. f-strings only. Escape Plotly placeholders as %{{x}} and %{{y}}. Never mix Python % formatting with Plotly placeholders. Percentages always carry the % symbol.
 
-        Set layout.margin.b to at least 120px to prevent the bottom legend from being clipped
-        Never use the default Plotly legend placement — always explicitly set orientation="h" to force horizontal layout below the chart
-        Never allow the legend to render on the right side — if it appears there, it means orientation="h" was not set; this is a rendering failure
+## PLOTLY OUTPUT RULES
 
-
+* plotly.express or plotly.graph_objects only
+* These names are ALREADY available in the execution scope — px, go, make_subplots, pd, np. Import lines are optional and never required.
+* Output ONLY Python code defining `fig` — no markdown fences, no comments, no explanation
+* No Streamlit code, no fig.show(), no use_container_width, no width= in update_layout
 
  TABLE SCHEMA:
 
