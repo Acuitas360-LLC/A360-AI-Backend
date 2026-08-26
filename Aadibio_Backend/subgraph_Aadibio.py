@@ -3444,6 +3444,11 @@ def summarizer_node(state: AgentState):
     sql_generator_output=state["sql_generator_output"]
     sql_executor_output=state["sql_executor_output"]
     result_df=deserialize_df(sql_executor_output)
+    print("Deserialized Result DF:")
+    print(result_df)
+    result_json = result_df.to_dict(orient="records")
+    print("Result JSON for Summarizer:")
+    print(result_json)
     #masked_df=mask_dataframe(result_df)
     prompt=f"""
 
@@ -3457,7 +3462,7 @@ Query Decomposer Output:
 {query_decomposer_output}
 
 SQL Executor Output:
-{result_df}
+{result_json}
 
 
 ---
