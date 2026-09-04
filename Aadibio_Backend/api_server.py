@@ -91,6 +91,7 @@ class PptGenerationRequest(BaseModel):
     disposition: Optional[str] = None
     chart_image_base64: Optional[str] = None
     chart_images_base64: Optional[list[str]] = None
+    bundle_id: Optional[str] = None
     request_id: Optional[str] = None
 
 
@@ -138,6 +139,9 @@ class PptCancelledError(RuntimeError):
 
 _ppt_cancel_lock = threading.Lock()
 _ppt_cancel_events: dict[str, threading.Event] = {}
+_ppt_bundle_lock = threading.Lock()
+_ppt_bundles: dict[str, dict[str, Any]] = {}
+_PPT_BUNDLE_MAX_AGE_SECONDS = 900
 
 
 def _register_ppt_cancel_event(request_id: Optional[str]) -> None:
@@ -177,6 +181,86 @@ def _raise_if_ppt_cancelled(request_id: Optional[str]) -> None:
 
     if event and event.is_set():
         raise PptCancelledError()
+
+
+def _prune_ppt_bundles() -> None:
+    now = time.time()
+    stale_output_paths: list[str] = []
+    with _ppt_bundle_lock:
+        for bundle_id, entry in list(_ppt_bundles.items()):
+            created_at = float(entry.get("created_at") or 0.0)
+            if now - created_at <= _PPT_BUNDLE_MAX_AGE_SECONDS:
+                continue
+            output_path = entry.get("output_path")
+            if isinstance(output_path, str) and output_path:
+                stale_output_paths.append(output_path)
+            _ppt_bundles.pop(bundle_id, None)
+
+    for output_path in stale_output_paths:
+        _safe_unlink(output_path)
+
+
+def _get_or_create_ppt_bundle_entry(bundle_id: str) -> dict[str, Any]:
+    _prune_ppt_bundles()
+    with _ppt_bundle_lock:
+        entry = _ppt_bundles.get(bundle_id)
+        if entry is None:
+            entry = {
+                "event": threading.Event(),
+                "builder_claimed": False,
+                "preview": None,
+                "output_path": None,
+                "error": None,
+                "created_at": time.time(),
+            }
+            _ppt_bundles[bundle_id] = entry
+        return entry
+
+
+def _claim_ppt_bundle_builder(bundle_id: str) -> tuple[dict[str, Any], bool]:
+    entry = _get_or_create_ppt_bundle_entry(bundle_id)
+    with _ppt_bundle_lock:
+        if not entry.get("builder_claimed"):
+            entry["builder_claimed"] = True
+            entry["created_at"] = time.time()
+            return entry, True
+        return entry, False
+
+
+def _set_ppt_bundle_result(
+    bundle_id: str,
+    *,
+    preview: Optional[list[dict[str, Any]]] = None,
+    output_path: Optional[str] = None,
+    error: Optional[Exception] = None,
+) -> None:
+    entry = _get_or_create_ppt_bundle_entry(bundle_id)
+    event = entry["event"]
+    with _ppt_bundle_lock:
+        if preview is not None:
+            entry["preview"] = preview
+        if output_path is not None:
+            entry["output_path"] = output_path
+        entry["error"] = error
+        entry["created_at"] = time.time()
+    event.set()
+
+
+def _wait_for_ppt_bundle(bundle_id: str, cancel_check: Optional[Callable[[], None]] = None) -> dict[str, Any]:
+    entry = _get_or_create_ppt_bundle_entry(bundle_id)
+    event = entry["event"]
+
+    while not event.wait(0.25):
+        if cancel_check:
+            cancel_check()
+
+    if cancel_check:
+        cancel_check()
+
+    error = entry.get("error")
+    if isinstance(error, Exception):
+        raise error
+    return entry
 
 
 @app.exception_handler(DatabaseUnavailableError)
@@ -3326,47 +3410,123 @@ def _build_preview_payload(
     chart_path_overrides: Optional[list[Optional[str]]] = None,
     cancel_check: Optional[Callable[[], None]] = None,
 ) -> list[dict[str, Any]]:
-    from deck_creator_agent_Aadibio import build_slide_data, parse_conversation
+    from deck_creator_agent_Aadibio import build_slide_data
 
     print(f"[PPT] preview: build start messages={len(messages)}")
-    blocks = parse_conversation(messages)
     slides = build_slide_data(
         messages,
         chart_path_overrides=chart_path_overrides,
         cancel_check=cancel_check,
     )
+    return _build_preview_payload_from_slides(
+        slides,
+        cancel_check=cancel_check,
+        cleanup_chart_paths=True,
+    )
+
+
+def _build_preview_payload_from_slides(
+    slides: list[dict[str, Any]],
+    *,
+    cancel_check: Optional[Callable[[], None]] = None,
+    cleanup_chart_paths: bool = False,
+) -> list[dict[str, Any]]:
     payload: list[dict[str, Any]] = []
     for index, slide in enumerate(slides):
         if cancel_check:
             cancel_check()
-        block = blocks[index] if index < len(blocks) else None
-        chart_fit: Optional[str] = None
-        if isinstance(block, dict) and isinstance(block.get("viz_figure"), dict):
-            figure = block.get("viz_figure")
-            meta = figure.get("meta") if isinstance(figure, dict) else None
-            meta_source = (
-                str(meta.get("source")).strip().lower()
-                if isinstance(meta, dict) and meta.get("source")
-                else ""
-            )
-            if meta_source == "heuristic" or not block.get("viz_code"):
-                chart_fit = "fill"
         chart_path = slide.get("chart_path") if isinstance(slide, dict) else None
-        payload.append(
-            {
-                "title": slide.get("title"),
-                "bullets": slide.get("bullets"),
-                "kpis": slide.get("kpis"),
-                "insight": slide.get("insight"),
-                "chart": _encode_chart_image(chart_path),
-                "chartFit": chart_fit,
-            }
+        manifest = slide.get("preview_manifest") if isinstance(slide, dict) else None
+        if not isinstance(manifest, dict):
+            manifest = {}
+        manifest = json.loads(json.dumps(manifest))
+        chart_src = _encode_chart_image(chart_path)
+        chart_panel = manifest.get("chartPanel")
+        if isinstance(chart_panel, dict):
+            chart_panel["imageSrc"] = chart_src
+        payload.append(manifest)
+        print(
+            "[PPT] preview: slide "
+            f"index={index} layout={manifest.get('layout')} "
+            f"chart={bool(chart_src)}"
         )
-        if isinstance(chart_path, str):
+        if cleanup_chart_paths and isinstance(chart_path, str):
             _safe_unlink(chart_path)
 
     print(f"[PPT] preview: build done slides={len(payload)}")
     return payload
+
+
+def _build_ppt_bundle(
+    messages: list[Any],
+    output_path: str,
+    chart_path_overrides: Optional[list[Optional[str]]] = None,
+    cancel_check: Optional[Callable[[], None]] = None,
+) -> dict[str, Any]:
+    from deck_creator_agent_Aadibio import build_ppt_from_slide_data, build_slide_data
+
+    template_path = _resolve_asset_path(os.getenv("PPT_TEMPLATE_PATH", ""))
+    logo_path = _resolve_asset_path(os.getenv("PPT_LOGO_PATH", ""))
+    kwargs: dict[str, Any] = {"output_path": output_path}
+    if template_path:
+        kwargs["uploaded_pptx_path"] = template_path
+    if logo_path:
+        kwargs["logo_path"] = logo_path
+    if chart_path_overrides:
+        kwargs["chart_path_overrides"] = chart_path_overrides
+    if cancel_check:
+        kwargs["cancel_check"] = cancel_check
+
+    print(
+        "[PPT] api: bundle build start "
+        f"messages={len(messages)} output={output_path} "
+        f"template={template_path} logo={logo_path}"
+    )
+
+    slides = build_slide_data(
+        messages,
+        chart_path_overrides=chart_path_overrides,
+        cancel_check=cancel_check,
+    )
+    for index, slide in enumerate(slides, start=1):
+        title = str(slide.get("title") or "").strip()
+        headline = str(slide.get("headline") or "").strip()
+        kpis = slide.get("kpis") or []
+        bullets = slide.get("bullets") or []
+        print(
+            "[PPT] api: bundle slide "
+            f"index={index} title={title!r} headline={headline!r} "
+            f"kpis={len(kpis)} bullets={len(bullets)}"
+        )
+    try:
+        preview = _build_preview_payload_from_slides(
+            slides,
+            cancel_check=cancel_check,
+            cleanup_chart_paths=False,
+        )
+        for index, manifest in enumerate(preview, start=1):
+            header = manifest.get("header") if isinstance(manifest, dict) else {}
+            title_block = header.get("title") if isinstance(header, dict) else None
+            headline_block = header.get("headline") if isinstance(header, dict) else None
+            title_lines = title_block.get("lines") if isinstance(title_block, dict) else []
+            headline_lines = headline_block.get("lines") if isinstance(headline_block, dict) else []
+            print(
+                "[PPT] api: bundle preview "
+                f"index={index} title={(' '.join(title_lines)).strip()!r} "
+                f"headline={(' '.join(headline_lines)).strip()!r}"
+            )
+        build_ppt_from_slide_data(slides, **kwargs)
+    finally:
+        for slide in slides:
+            chart_path = slide.get("chart_path") if isinstance(slide, dict) else None
+            if isinstance(chart_path, str):
+                _safe_unlink(chart_path)
+
+    print(
+        "[PPT] api: bundle build done "
+        f"slides={len(preview)} output={output_path}"
+    )
+    return {"preview": preview, "output_path": output_path}
 
 
 @app.get("/health")
@@ -4172,12 +4332,14 @@ def create_slide_ppt(
     current_user = _get_request_user(raw_request)
     current_user_id = current_user["user_id"]
     request_id = (request.request_id or "").strip() or None
+    bundle_id = (request.bundle_id or "").strip() or None
     _register_ppt_cancel_event(request_id)
     cancel_check = lambda: _raise_if_ppt_cancelled(request_id)
 
     print(
         "[PPT] api: slide request "
-        f"thread={request.thread_id} message={request.message_id} user={current_user_id}"
+        f"thread={request.thread_id} message={request.message_id} "
+        f"user={current_user_id} bundle={bundle_id}"
     )
 
     if not _is_thread_visible(None, request.thread_id, current_user_id):
@@ -4204,12 +4366,36 @@ def create_slide_ppt(
             chart_overrides = [chart_override_path] if chart_override_path else None
 
         output_path = _build_temp_ppt_path()
-        _generate_ppt_file(
-            langchain_messages,
-            output_path,
-            chart_path_overrides=chart_overrides,
-            cancel_check=cancel_check,
-        )
+        if bundle_id:
+            bundle_entry, is_builder = _claim_ppt_bundle_builder(bundle_id)
+            if is_builder:
+                try:
+                    bundle_result = _build_ppt_bundle(
+                        langchain_messages,
+                        output_path,
+                        chart_path_overrides=chart_overrides,
+                        cancel_check=cancel_check,
+                    )
+                    _set_ppt_bundle_result(
+                        bundle_id,
+                        preview=bundle_result["preview"],
+                        output_path=bundle_result["output_path"],
+                    )
+                except Exception as exc:
+                    _set_ppt_bundle_result(bundle_id, error=exc)
+                    raise
+            else:
+                bundle_result = _wait_for_ppt_bundle(bundle_id, cancel_check=cancel_check)
+                output_path = bundle_result.get("output_path") or output_path
+                if not os.path.exists(output_path):
+                    raise HTTPException(status_code=409, detail="PPT bundle expired")
+        else:
+            _generate_ppt_file(
+                langchain_messages,
+                output_path,
+                chart_path_overrides=chart_overrides,
+                cancel_check=cancel_check,
+            )
 
         chatbot_instance = _get_chatbot()
         thread_title = _get_thread_title(chatbot_instance, request.thread_id, current_user_id)
@@ -4238,12 +4424,13 @@ def create_deck_ppt(
     current_user = _get_request_user(raw_request)
     current_user_id = current_user["user_id"]
     request_id = (request.request_id or "").strip() or None
+    bundle_id = (request.bundle_id or "").strip() or None
     _register_ppt_cancel_event(request_id)
     cancel_check = lambda: _raise_if_ppt_cancelled(request_id)
 
     print(
         "[PPT] api: deck request "
-        f"thread={request.thread_id} user={current_user_id}"
+        f"thread={request.thread_id} user={current_user_id} bundle={bundle_id}"
     )
 
     if not _is_thread_visible(None, request.thread_id, current_user_id):
@@ -4265,12 +4452,36 @@ def create_deck_ppt(
             chart_overrides = [chart_override_path] if chart_override_path else None
 
         output_path = _build_temp_ppt_path()
-        _generate_ppt_file(
-            langchain_messages,
-            output_path,
-            chart_path_overrides=chart_overrides,
-            cancel_check=cancel_check,
-        )
+        if bundle_id:
+            bundle_entry, is_builder = _claim_ppt_bundle_builder(bundle_id)
+            if is_builder:
+                try:
+                    bundle_result = _build_ppt_bundle(
+                        langchain_messages,
+                        output_path,
+                        chart_path_overrides=chart_overrides,
+                        cancel_check=cancel_check,
+                    )
+                    _set_ppt_bundle_result(
+                        bundle_id,
+                        preview=bundle_result["preview"],
+                        output_path=bundle_result["output_path"],
+                    )
+                except Exception as exc:
+                    _set_ppt_bundle_result(bundle_id, error=exc)
+                    raise
+            else:
+                bundle_result = _wait_for_ppt_bundle(bundle_id, cancel_check=cancel_check)
+                output_path = bundle_result.get("output_path") or output_path
+                if not os.path.exists(output_path):
+                    raise HTTPException(status_code=409, detail="PPT bundle expired")
+        else:
+            _generate_ppt_file(
+                langchain_messages,
+                output_path,
+                chart_path_overrides=chart_overrides,
+                cancel_check=cancel_check,
+            )
 
         chatbot_instance = _get_chatbot()
         thread_title = _get_thread_title(chatbot_instance, request.thread_id, current_user_id)
@@ -4298,46 +4509,43 @@ def preview_ppt(
     current_user = _get_request_user(raw_request)
     current_user_id = current_user["user_id"]
     request_id = (request.request_id or "").strip() or None
+    bundle_id = (request.bundle_id or "").strip() or None
     _register_ppt_cancel_event(request_id)
     cancel_check = lambda: _raise_if_ppt_cancelled(request_id)
 
     print(
         "[PPT] api: preview request "
-        f"thread={request.thread_id} message={request.message_id} user={current_user_id}"
+        f"thread={request.thread_id} message={request.message_id} "
+        f"user={current_user_id} bundle={bundle_id}"
     )
 
     if not _is_thread_visible(None, request.thread_id, current_user_id):
         raise HTTPException(status_code=404, detail="Thread not found")
 
     try:
-        cached_messages = _load_thread_messages_for_ppt(request.thread_id, current_user_id)
-        if not cached_messages:
-            raise HTTPException(status_code=404, detail="No messages found for thread")
+        if not bundle_id:
+            raise HTTPException(
+                status_code=400,
+                detail="bundle_id is required for preview",
+            )
 
-        assistant_message_id = _normalize_optional_text(request.message_id)
-        if assistant_message_id:
-            cached_messages = _select_user_assistant_pair(cached_messages, assistant_message_id)
-
-        cancel_check()
-        langchain_messages = _build_langchain_messages_from_cached(cached_messages)
-        if not langchain_messages:
-            raise HTTPException(status_code=404, detail="No preview content available")
-
-        chart_overrides = _decode_chart_images_base64(request.chart_images_base64)
-        if chart_overrides is None:
-            chart_override_path = _decode_chart_image_base64(request.chart_image_base64)
-            chart_overrides = [chart_override_path] if chart_override_path else None
-
-        slides = _build_preview_payload(
-            langchain_messages,
-            chart_path_overrides=chart_overrides,
-            cancel_check=cancel_check,
-        )
+        bundle_entry = _wait_for_ppt_bundle(bundle_id, cancel_check=cancel_check)
+        slides = bundle_entry.get("preview")
         if not slides:
             raise HTTPException(status_code=404, detail="No preview content available")
 
+        first_slide = slides[0] if isinstance(slides, list) and slides else None
+        header = first_slide.get("header") if isinstance(first_slide, dict) else {}
+        title_block = header.get("title") if isinstance(header, dict) else None
+        headline_block = header.get("headline") if isinstance(header, dict) else None
+        title_lines = title_block.get("lines") if isinstance(title_block, dict) else []
+        headline_lines = headline_block.get("lines") if isinstance(headline_block, dict) else []
+
         print(
-            f"[PPT] api: preview response ready thread={request.thread_id} slides={len(slides)}"
+            "[PPT] api: preview response ready "
+            f"thread={request.thread_id} slides={len(slides)} "
+            f"first_title={(' '.join(title_lines)).strip()!r} "
+            f"first_headline={(' '.join(headline_lines)).strip()!r}"
         )
         return {"slides": slides}
     except PptCancelledError:

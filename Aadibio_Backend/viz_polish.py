@@ -171,6 +171,19 @@ def _match_column(df, values):
     return None
 
 
+def _plain_datetime(value):
+    """
+    pandas.Timestamp -> datetime.datetime, everything else untouched.
+
+    Plotly treats the two identically. orjson does not: it serialises exact
+    datetime.datetime and refuses subclasses, so a Timestamp anywhere in a
+    figure breaks PNG export on any install that has orjson present.
+    """
+    if isinstance(value, pd.Timestamp):
+        return None if value is pd.NaT else value.to_pydatetime()
+    return value
+
+
 def _align_time_axis(fig, df=None):
     """
     Re-point the X axis at the column matching the result's grain.
@@ -196,7 +209,9 @@ def _align_time_axis(fig, df=None):
             continue                        # not 1:1, remapping would lie
 
         lookup = dict(zip(pairs[source], pairs[target]))
-        tr.x = [lookup.get(v, v) for v in tr.x]
+        # to_pydatetime for the same orjson reason as _pin_date_ticks: a
+        # remapped axis carrying pandas Timestamps cannot be exported.
+        tr.x = [_plain_datetime(lookup.get(v, v)) for v in tr.x]
 
         if getattr(tr, "hovertemplate", None):
             tr.hovertemplate = None         # rebuilt later against new values
@@ -638,6 +653,109 @@ def _select_label_indices(values, texts, sides, font_px: float,
     return keep
 
 
+# Plot-area a single data label needs to stay comfortably readable. Derived
+# from the on-screen chart the app already ships: 26 labels on a ~900 x 360
+# plot. A slide panel a third of that area therefore earns about a third of
+# the labels, which keeps a deck chart as legible as the screen one.
+LABEL_AREA_PX = 12500
+
+
+def _budget_labels(keep: set, values, max_labels: int) -> set:
+    """
+    Cut a collision-clear label set down to an area budget, evenly.
+
+    The four landmark points — first, last, peak, trough — are the numbers a
+    reader looks for, so they are kept outright. The rest are sampled at even
+    spacing rather than truncated, because truncating the selection order
+    would bunch every surviving label at the left of the chart.
+    """
+    if max_labels <= 0 or len(keep) <= max_labels:
+        return keep
+
+    numeric = [(i, v) for i, v in enumerate(values) if v == v]
+    if not numeric:
+        return set(sorted(keep)[:max_labels])
+
+    n = len(values)
+    landmarks = {0, n - 1,
+                 max(numeric, key=lambda p: p[1])[0],
+                 min(numeric, key=lambda p: p[1])[0]}
+    out = {i for i in landmarks if i in keep}
+
+    rest = sorted(i for i in keep if i not in out)
+    room = max_labels - len(out)
+    if room > 0 and rest:
+        if room >= len(rest):
+            out.update(rest)
+        else:
+            step = len(rest) / float(room)
+            out.update(rest[int(k * step)] for k in range(room))
+    return out
+
+
+def thin_line_labels(fig, plot_w_px: float, plot_h_px: float,
+                     min_gap_px: float = 0.0, max_labels: int | None = None):
+    """
+    Re-run line-label collision selection against a KNOWN plot rectangle.
+
+    `apply_classic_layout` has to guess the plot size, because on screen the
+    figure is drawn at container width. A slide panel is a fixed, and much
+    smaller, rectangle — typically ~625 x 240 px against the 1035 x 360 the
+    guess assumes. Labels chosen for the larger canvas overprint each other
+    once they land in the smaller one.
+
+    Callers that DO know their rectangle (the deck) call this afterwards with
+    the real numbers. Selection restarts from the full candidate list stashed
+    on each trace, so this can both drop labels and restore ones the nominal
+    pass dropped. Traces without that stash are left alone.
+
+    max_labels caps the count per trace on top of the collision test. Two
+    labels can be geometrically clear and still crowd the eye on a small
+    panel; None derives the cap from the plot area, 0 disables it.
+    """
+    if fig is None:
+        return fig
+    try:
+        plot_w_px = max(float(plot_w_px), 60.0)
+        plot_h_px = max(float(plot_h_px), 40.0)
+    except (TypeError, ValueError):
+        return fig
+
+    labelled = [tr for tr in fig.data
+                if getattr(tr, "type", "") in ("scatter", "scattergl")
+                and isinstance(getattr(tr, "meta", None), dict)
+                and "label_candidates" in tr.meta]
+
+    if max_labels is None:
+        # Traces share one rectangle, so they share one budget. Three lines
+        # each drawing its own full quota is how a multi-line chart turns
+        # into a wall of numbers.
+        budget = plot_w_px * plot_h_px / LABEL_AREA_PX / max(len(labelled), 1)
+        max_labels = max(int(round(budget)), 4)
+
+    for tr in fig.data:
+        if getattr(tr, "type", "") not in ("scatter", "scattergl"):
+            continue
+        meta = getattr(tr, "meta", None)
+        if not isinstance(meta, dict) or "label_candidates" not in meta:
+            continue
+        try:
+            candidates = list(meta["label_candidates"])
+            sides = list(meta["label_sides"])
+            values = list(meta["label_values"])
+            font_px = float(meta.get("label_font_px") or 10.0)
+            keep = _select_label_indices(values, candidates, sides,
+                                         font_px + max(min_gap_px, 0.0),
+                                         plot_w_px, plot_h_px)
+            keep = _budget_labels(keep, values, max_labels)
+            tr.text = [t if i in keep else ""
+                       for i, t in enumerate(candidates)]
+            tr.textposition = sides
+        except Exception as exc:
+            print(f"[viz_polish] thin_line_labels skipped: {exc}")
+    return fig
+
+
 def _label_positions(values, base: str):
     """
     Put each label on the side of the point the line isn't running through.
@@ -806,6 +924,17 @@ def _style_traces(fig, scale: float = 1.0, max_labelled_points: int = MAX_LABELL
                 tr.textposition = sides
                 tr.textfont = dict(size=label_size, color=MUTED_INK)
                 tr.cliponaxis = False
+                # The selection above was made against a NOMINAL plot area.
+                # A slide panel is much smaller, so the caller has to be able
+                # to redo it against the real rectangle — which needs the full
+                # candidate list back, not the already-thinned one. Park it on
+                # the trace; meta is never rendered.
+                tr.meta = {
+                    "label_candidates": list(candidates),
+                    "label_sides": list(sides),
+                    "label_values": list(positions),
+                    "label_font_px": float(label_size),
+                }
                 if "text" not in (tr.mode or ""):
                     tr.mode = (tr.mode or "lines+markers") + "+text"
             else:
@@ -964,7 +1093,15 @@ def _pin_date_ticks(fig, axis, max_ticks: int = 12):
     if len(set(labels)) != len(labels):
         labels = [p.strftime("%d %b %Y") for p in points]
 
-    axis.update(tickmode="array", tickvals=points, ticktext=labels)
+    # pandas.Timestamp, not datetime.datetime, is what `.tolist()` produces.
+    # Plotly renders both identically, but when orjson is installed plotly
+    # serialises through it — and orjson refuses datetime SUBCLASSES, so a
+    # Timestamp here kills PNG export with "Type is not JSON serializable:
+    # Timestamp" while the on-screen chart, which never serialises this way,
+    # renders fine.
+    axis.update(tickmode="array",
+                tickvals=[p.to_pydatetime() for p in points],
+                ticktext=labels)
 
 
 def _strftime(plotly_fmt: str) -> str:

@@ -2,6 +2,7 @@ python-dotenv
 langgraph
 langchain-openai
 openai
+anthropic
 matplotlib
 langgraph-checkpoint-postgres
 psycopg[binary]
