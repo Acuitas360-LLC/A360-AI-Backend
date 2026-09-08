@@ -220,6 +220,8 @@ try:
 except Exception:                                            # pragma: no cover
     np = None
 
+import chart_engine_Aadibio as ce
+
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
@@ -1282,7 +1284,8 @@ def parse_conversation(messages: Iterable[Any],
     def _new(question: str) -> dict:
         return {"question": question.strip(), "summary": None, "sections": {},
                 "sql": None, "data": None, "viz_code": None,
-                "viz_figure": None, "followups": []}
+                "viz_figure": None, "viz_selection": None,
+                "assistant_message_id": None, "followups": []}
 
     for msg in messages or []:
         role = _msg_role(msg)
@@ -1301,6 +1304,8 @@ def parse_conversation(messages: Iterable[Any],
 
         if mtype == "sql_result":
             current["data"] = kwargs.get("data")
+            if kwargs.get("assistant_message_id") and not current["assistant_message_id"]:
+                current["assistant_message_id"] = str(kwargs.get("assistant_message_id")).strip()
             sql_query = kwargs.get("sql_query")
             if sql_query and not current["sql"]:
                 current["sql"] = str(sql_query).strip()
@@ -1319,6 +1324,10 @@ def parse_conversation(messages: Iterable[Any],
             figure = kwargs.get("figure")
             if isinstance(figure, dict):
                 current["viz_figure"] = figure
+            if isinstance(kwargs.get("viz_selection"), dict):
+                current["viz_selection"] = kwargs.get("viz_selection")
+            if kwargs.get("assistant_message_id") and not current["assistant_message_id"]:
+                current["assistant_message_id"] = str(kwargs.get("assistant_message_id")).strip()
             continue
 
         if mtype in ("table", "dataframe") and kwargs.get("data"):
@@ -1400,6 +1409,8 @@ def extract_export_context(messages: Iterable[Any],
         "row_count": len(rows),
         "viz_code": block.get("viz_code"),
         "viz_figure_payload": block.get("viz_figure"),
+        "viz_selection": block.get("viz_selection"),
+        "assistant_message_id": block.get("assistant_message_id"),
         "followups": list(block.get("followups") or []),
         "normalized_messages": message_list,
     }
@@ -5996,22 +6007,46 @@ def build_slide_model(
     """Content + data + chart + layout decision for a single analysis block."""
     df = to_dataframe(block.get("data"))
     profile = profile_dataframe(df, getattr(cfg, "hooks", None))
-    content = generate_slide_content(block, cfg, df, profile)
+    render = chart = None
+    if block.get("viz_code") or block.get("viz_figure"):
+        try:
+            render = resolve_chart(block, cfg)
+            chart = profile_chart(render)
+        except Exception as exc:
+            log.warning("chart resolution failed (%s) - writing from the result set", exc)
+            render = chart = None
+    content = generate_slide_content_with_chart(block, cfg, df, profile, chart)
 
     model: dict[str, Any] = dict(content)
     model.update(question=block.get("question", ""), df=df, profile=profile,
-                 chips=profile.get("chips") or [], chart_path=None)
+                 chips=profile.get("chips") or [], chart_path=None,
+                 assistant_message_id=block.get("assistant_message_id"))
+
+    filter_chip = (chart or {}).get("filter_chip") or ""
+    if filter_chip:
+        model["chips"].insert(1 if model["chips"] else 0, filter_chip)
+        model["filter_chips"] = [filter_chip]
 
     if chart_path_override:
         model["chart_path"] = chart_path_override
         log.info("[deck-debug] chart override applied before layout path=%s",
                  chart_path_override)
-    elif block.get("viz_code") or block.get("viz_figure"):
+    elif render is not None:
         try:
             panel_w, panel_h = deck.chart_panel(model)
             if chart_render_spec_mode:
-                spec = build_chart_render_spec(block, deck.theme, panel_w,
-                                               panel_h, cfg)
+                prepared = _resolved_figure_for_slide(render, deck.theme, panel_w, panel_h, cfg)
+                spec = None
+                if prepared is not None:
+                    fig, px_w, px_h = prepared
+                    figure = _plotly_figure_json(fig)
+                    if figure:
+                        spec = {
+                            "figure": figure,
+                            "width": px_w,
+                            "height": px_h,
+                            "scale": max(cfg.chart_scale, 2),
+                        }
                 if spec:
                     model["chart_render_spec"] = spec
                     model["chart_expected"] = True
@@ -6022,10 +6057,27 @@ def build_slide_model(
                         spec.get("scale"),
                     )
             else:
-                model["chart_path"] = render_chart(block, deck.theme, panel_w,
-                                                   panel_h, cfg)
+                prepared = _resolved_figure_for_slide(render, deck.theme, panel_w, panel_h, cfg)
+                if prepared is not None:
+                    fig, px_w, px_h = prepared
+                    os.makedirs(cfg.workdir, exist_ok=True)
+                    path_out = os.path.join(cfg.workdir, f"chart_{uuid.uuid4().hex[:10]}.png")
+                    try:
+                        fig.write_image(path_out, width=px_w, height=px_h, scale=max(cfg.chart_scale, 2))
+                    except Exception as exc:
+                        log.warning("chart export failed at %dx%d (%s). Is kaleido==0.2.1 installed?", px_w, px_h, exc)
+                    else:
+                        if os.path.exists(path_out):
+                            model["chart_path"] = path_out
         except Exception as exc:
             log.warning("chart pipeline failed: %s", exc)
+
+        if render is not None and not model.get("chart_path") and not model.get("chart_render_spec"):
+            log.warning("chart resolved but did not export; dropping its caveats")
+            model["chart_caption"] = ""
+            model["footnote"] = _incomplete_period_note(df, profile)
+            model["chips"] = [chip for chip in model["chips"] if chip != filter_chip]
+            model["filter_chips"] = []
 
     model["layout"] = "chart_split" if model.get("chart_expected") else choose_layout(model)
     model["notes"] = _speaker_notes(block, content, model["layout"], cfg)
@@ -6108,6 +6160,928 @@ def _cleanup_charts(models: Sequence[dict], cfg: DeckConfig) -> None:
 
 # ── host-app helpers ─────────────────────────────────────────────────────────
 
+def _pretty(col: Any) -> str:
+    try:
+        return ce.pretty_label(col)
+    except Exception:
+        return humanize_column(col)
+
+
+def _axis_noun(label: str) -> str:
+    text = re.sub(r"\s*(name|id|code|key)$", "", str(label or "").strip(), flags=re.I)
+    text = text.strip().lower() or "categories"
+    if text.endswith(("s", "x", "z", "ch", "sh")):
+        return text
+    if text.endswith("y") and text[-2:-1] not in "aeiou":
+        return text[:-1] + "ies"
+    return text + "s"
+
+
+def _series_unit(col: str) -> str:
+    up = str(col).upper()
+    try:
+        if ce.is_percent_column(col):
+            return "%"
+    except Exception:
+        pass
+    if re.search(r"(^|_)MG(_|$)|MG$", up):
+        return "mg"
+    if _VIAL_RE.search(up):
+        return "vials"
+    if _MONEY_RE.search(up):
+        return "$"
+    return ""
+
+
+def _is_additive(col: str) -> bool:
+    try:
+        return bool(ce.is_additive_column(col))
+    except Exception:
+        return not is_rate_like(col)
+
+
+def _frame_from_figure(fig) -> Any:
+    if pd is None or fig is None:
+        return None
+    x_vals, cols = None, {}
+    for i, trace in enumerate(getattr(fig, "data", []) or []):
+        xs = list(getattr(trace, "x", None) or [])
+        ys = list(getattr(trace, "y", None) or [])
+        if not ys:
+            continue
+        if x_vals is None and xs:
+            x_vals = [str(v) for v in xs]
+        name = str(getattr(trace, "name", "") or f"Series {i + 1}").strip()
+        if x_vals and len(ys) != len(x_vals):
+            continue
+        cols[name or f"Series {i + 1}"] = ys
+    if not cols:
+        return None
+    try:
+        data = {"__x__": x_vals} if x_vals else {}
+        data.update(cols)
+        return pd.DataFrame(data)
+    except Exception:
+        return None
+
+
+def resolve_chart(block: dict, cfg: DeckConfig) -> dict | None:
+    code = block.get("viz_code")
+    df = to_dataframe(block.get("data"))
+    if df is None or len(df) == 0:
+        log.info("chart skipped: no dataframe")
+        return None
+
+    try:
+        import plotly.graph_objects as go
+        import plotly.express as px
+        from plotly.subplots import make_subplots
+    except Exception as exc:
+        log.warning("plotly unavailable (%s) - chart skipped", exc)
+        return None
+
+    hooks = getattr(cfg, "hooks", None)
+    fig = None
+    from_engine = False
+    df_plot = df
+    selection = block.get("viz_selection") or {}
+
+    filters = selection.get("filters") or {}
+    filter_text = ""
+    if filters:
+        try:
+            filtered = ce.apply_filters(df_plot, filters)
+            if not filtered.empty:
+                df_plot = filtered
+                try:
+                    filter_text = (ce.describe_filters(filters, df) or "").strip()
+                except Exception:
+                    filter_text = ""
+        except Exception as exc:
+            log.warning("chart filters failed (%s) - using unfiltered data", exc)
+
+    metric_comparison = False
+    try:
+        df_plot = ce.normalize_frame(df_plot)
+        if selection.get("metric_comparison") or ce.needs_metric_comparison(df_plot):
+            collapsed = ce.metric_comparison_frame(df_plot)
+            metric_comparison = collapsed is not df_plot
+            df_plot = collapsed
+    except Exception as exc:
+        log.warning("frame normalisation failed (%s)", exc)
+
+    pre_plot = df_plot
+    spec: dict[str, Any] = {
+        "chart_type": None,
+        "x_column": None,
+        "y_columns": [],
+        "top_n": ce.DEFAULT_TOP_N,
+        "filters": filters,
+        "filter_text": filter_text,
+        "metric_comparison": metric_comparison,
+        "is_default_view": bool(selection.get("is_default_view")),
+        "source": None,
+        "title": None,
+        "labels": {},
+    }
+
+    if code and ce.is_viz_config_payload(str(code)):
+        payload = ce.build_interactive_chart_payload(
+            df,
+            str(code),
+            question=block.get("question"),
+            selection=selection,
+        )
+        if payload.get("no_visualization"):
+            log.info("chart skipped: agent returned no_visualization")
+            return None
+        fig = payload.get("figure")
+        chart_selection = payload.get("chart_selection") or {}
+        spec.update(
+            chart_type=chart_selection.get("chart_type"),
+            x_column=chart_selection.get("x_column"),
+            y_columns=list(chart_selection.get("y_columns") or []),
+            title=chart_selection.get("title"),
+            labels=chart_selection.get("labels") or {},
+            top_n=chart_selection.get("top_n", ce.DEFAULT_TOP_N),
+            filters=chart_selection.get("filters") or {},
+            metric_comparison=bool(chart_selection.get("metric_comparison")),
+            is_default_view=bool(chart_selection.get("is_default_view")),
+            filter_text=ce.describe_filters(chart_selection.get("filters") or {}, df),
+            source="user_selection" if selection else "agent_config",
+        )
+        from_engine = fig is not None
+        df_plot = ce.normalize_frame(df.copy())
+        if spec["metric_comparison"]:
+            df_plot = ce.metric_comparison_frame(df_plot)
+        if spec["filters"]:
+            filtered = ce.apply_filters(df_plot, spec["filters"])
+            if not filtered.empty:
+                df_plot = filtered
+        pre_plot = df_plot
+
+    if fig is None and code and "fig" in str(code):
+        spec["source"] = "legacy_exec"
+        if getattr(hooks, "viz_sanitizer", None):
+            try:
+                code = hooks.viz_sanitizer(code)
+            except Exception as exc:
+                log.warning("viz_sanitizer failed (%s) - using raw code", exc)
+
+        ns: dict[str, Any] | None = None
+        if getattr(hooks, "viz_scope_builder", None):
+            try:
+                ns = dict(hooks.viz_scope_builder(df.copy()))
+            except Exception as exc:
+                log.warning("viz_scope_builder failed (%s) - built-in scope", exc)
+                ns = None
+        if ns is None:
+            ns = {"df": df.copy(), "pd": pd, "np": np, "go": go, "px": px, "make_subplots": make_subplots}
+        ns.setdefault("__builtins__", __builtins__)
+        try:
+            exec(compile(str(code), "<viz_agent>", "exec"), ns, ns)
+        except Exception as exc:
+            log.warning("legacy visualization code failed: %s\ncolumns=%s", exc, list(df.columns))
+        else:
+            fig = ns.get("fig") or next((v for v in ns.values() if isinstance(v, go.Figure)), None)
+
+    if fig is None and isinstance(block.get("viz_figure"), dict):
+        try:
+            fig = go.Figure(block.get("viz_figure"))
+            spec["source"] = spec.get("source") or "stored_figure"
+        except Exception as exc:
+            log.warning("stored visualization figure unusable (%s)", exc)
+
+    if fig is None:
+        fig = _fallback_figure(df, go)
+        spec["source"] = "fallback"
+    if fig is None:
+        log.warning("chart skipped: no figure and no fallback for '%s'", str(block.get("question", ""))[:80])
+        return None
+
+    plotted = None
+    x_col = spec.get("x_column")
+    y_eff = list(spec.get("y_columns") or [])
+    if from_engine and x_col is not None and y_eff:
+        try:
+            y_eff = [c for c in y_eff if c in pre_plot.columns and c != x_col]
+            if spec["chart_type"] in ce.SINGLE_METRIC_CHARTS:
+                y_eff = y_eff[:1]
+            plotted, x_col, y_eff = ce.prepare_plot_df(
+                pre_plot,
+                x_col,
+                y_eff,
+                top_n=spec["top_n"],
+                chart_type=spec["chart_type"],
+            )
+        except Exception as exc:
+            log.warning("plotted frame reconstruction failed (%s)", exc)
+            plotted = None
+    if plotted is None or (pd is not None and len(plotted) == 0):
+        plotted = _frame_from_figure(fig)
+        x_col = x_col if plotted is not None and x_col in getattr(plotted, "columns", []) else "__x__"
+
+    spec["x_column"] = x_col
+    spec["y_columns"] = y_eff or spec.get("y_columns") or []
+
+    return {"fig": fig, "df": df, "df_plot": pre_plot, "plot_df": plotted, "from_engine": from_engine, "spec": spec}
+
+
+def _shape_read(frame, x_col: str, series: list[dict], x_is_time: bool) -> str:
+    if not series or frame is None or pd is None or len(frame) == 0:
+        return ""
+    primary = next((s for s in series if s.get("additive")), series[0])
+    col = primary["column"]
+    try:
+        values = frame[col].dropna().astype(float)
+    except Exception:
+        return ""
+    if values.empty:
+        return ""
+    n = int(values.shape[0])
+    if n == 1:
+        return "one value plotted"
+    if x_is_time:
+        first, last = float(values.iloc[0]), float(values.iloc[-1])
+        pct = ((last - first) / abs(first) * 100.0) if first else 0.0
+        if pct > 5:
+            return f"rising across the {n} periods shown ({pct:+.0f}% first to last)"
+        if pct < -5:
+            return f"falling across the {n} periods shown ({pct:+.0f}% first to last)"
+        return f"broadly flat across the {n} periods shown ({pct:+.0f}% first to last)"
+    total = float(values.sum())
+    if total:
+        top3 = float(values.nlargest(min(3, n)).sum())
+        share = top3 / total * 100.0
+        if share >= 60 and n >= 4:
+            return (
+                f"concentrated: the top {min(3, n)} of {n} plotted "
+                f"{_axis_noun(_pretty(x_col))} carry {share:.0f}% of the total shown"
+            )
+    return f"{n} {_axis_noun(_pretty(x_col))} plotted, led by {primary.get('max_at') or 'the top bar'}"
+
+
+def profile_chart(render: dict | None) -> dict | None:
+    if not render or render.get("fig") is None or pd is None:
+        return None
+    frame = render.get("plot_df")
+    if frame is None or len(frame) == 0:
+        return None
+
+    spec = render.get("spec") or {}
+    raw = render.get("df")
+    pre = render.get("df_plot")
+    x_col = spec.get("x_column")
+    y_cols = [c for c in (spec.get("y_columns") or []) if c in frame.columns]
+    if not y_cols:
+        y_cols = [c for c in frame.columns if c != x_col and _is_numeric(frame[c])]
+    if not y_cols:
+        return None
+
+    labels = spec.get("labels") or {}
+    try:
+        x_is_time = bool(pre is not None and x_col in getattr(pre, "columns", []) and ce.time_kind(pre, x_col))
+    except Exception:
+        x_is_time = _is_dateish(str(x_col))
+
+    categories = [str(v) for v in frame[x_col].tolist()] if x_col in frame.columns else []
+    series: list[dict] = []
+    for col in y_cols:
+        try:
+            clean = frame[col].dropna().astype(float)
+        except Exception:
+            continue
+        if clean.empty:
+            continue
+        pos_max = int(clean.values.argmax())
+        pos_min = int(clean.values.argmin())
+
+        def _at(pos: int) -> str:
+            try:
+                return str(frame[x_col].iloc[frame.index.get_loc(clean.index[pos])])
+            except Exception:
+                return str(categories[pos]) if pos < len(categories) else ""
+
+        first, last = float(clean.iloc[0]), float(clean.iloc[-1])
+        additive = _is_additive(col)
+        series.append(
+            {
+                "column": col,
+                "label": labels.get(col) or _pretty(col),
+                "unit": _series_unit(col),
+                "additive": additive,
+                "agg": "sum" if additive else "mean",
+                "n": int(clean.shape[0]),
+                "first": first,
+                "last": last,
+                "delta": last - first,
+                "pct_change": ((last - first) / abs(first) * 100.0) if first else None,
+                "min": float(clean.min()),
+                "min_at": _at(pos_min),
+                "max": float(clean.max()),
+                "max_at": _at(pos_max),
+                "mean": float(clean.mean()),
+                "total": float(clean.sum()) if additive else None,
+            }
+        )
+    if not series:
+        return None
+
+    dropped: list[str] = []
+    omitted: list[str] = []
+    rows_available = len(frame)
+    try:
+        on_axis = {str(c).strip().lower() for c in categories}
+        source_for_gaps = raw if spec.get("metric_comparison") else pre
+        if source_for_gaps is not None:
+            for col in ce.selectable_y_columns(source_for_gaps):
+                name = labels.get(col) or _pretty(col)
+                if col in y_cols or col == x_col or str(name).strip().lower() in on_axis:
+                    continue
+                dropped.append(name)
+    except Exception:
+        pass
+    try:
+        if pre is not None and x_col in getattr(pre, "columns", []):
+            seen = {str(v) for v in categories}
+            everything = [str(v) for v in pre[x_col].dropna().unique().tolist()]
+            rows_available = len(everything)
+            omitted = [v for v in everything if v not in seen]
+    except Exception:
+        pass
+
+    filter_keep: list[str] = []
+    filter_drop: list[str] = []
+    filter_detail: list[dict] = []
+    try:
+        for col, fspec in (spec.get("filters") or {}).items():
+            if not isinstance(fspec, dict):
+                continue
+            if fspec.get("kind") == "date":
+                filter_detail.append({"column": col, "label": _pretty(col), "kind": "date", "start": str(fspec.get("start") or ""), "end": str(fspec.get("end") or "")})
+                continue
+            if fspec.get("kind") != "category":
+                continue
+            kept = {str(v) for v in (fspec.get("values") or [])}
+            if not kept or raw is None or col not in getattr(raw, "columns", []):
+                continue
+            excluded = ({str(v) for v in raw[col].dropna().astype(str).unique()} - kept)
+            filter_keep.extend(sorted(kept))
+            filter_drop.extend(sorted(excluded))
+            filter_detail.append({"column": col, "label": _pretty(col), "kind": "category", "kept": sorted(kept), "dropped": sorted(excluded)})
+    except Exception:
+        pass
+
+    facts: dict[str, Any] = {
+        "chart_type": spec.get("chart_type") or "Chart",
+        "source": spec.get("source"),
+        "x_column": x_col,
+        "x_label": labels.get(x_col) or _pretty(x_col),
+        "x_is_time": x_is_time,
+        "rendered_categories": categories,
+        "rows_plotted": len(frame),
+        "rows_available": rows_available,
+        "truncated": bool(omitted) and not x_is_time,
+        "omitted_categories": omitted[:12],
+        "omitted_count": len(omitted),
+        "dropped_series": dropped[:6],
+        "filter_keep": filter_keep[:12],
+        "filter_drop": filter_drop[:24],
+        "filter_detail": filter_detail,
+        "filter_drop_is_smaller": bool(filter_drop) and len(filter_drop) <= len(filter_keep),
+        "filter_text": spec.get("filter_text") or "",
+        "metric_comparison": bool(spec.get("metric_comparison")),
+        "is_default_view": bool(spec.get("is_default_view")),
+        "title": spec.get("title") or "",
+        "series": series,
+        "frame": frame,
+    }
+    facts["shape_read"] = _shape_read(frame, x_col, series, x_is_time)
+    facts["profile"] = profile_dataframe(frame)
+    facts["numbers"] = allowed_numbers(frame, "")
+    kpi_frame = raw if spec.get("metric_comparison") else frame
+    facts["kpi_frame"] = kpi_frame
+    facts["kpi_profile"] = profile_dataframe(kpi_frame)
+    facts["caption"] = _chart_caption(facts)
+    facts["filter_chip"] = _filter_chip(filter_detail)
+    facts["filter_phrase"] = _filter_phrase(filter_detail)
+    return facts
+
+
+def _filter_phrase(detail: list[dict]) -> str:
+    parts: list[str] = []
+    for spec in detail or []:
+        if spec.get("kind") == "date":
+            span = " to ".join(x for x in (spec.get("start"), spec.get("end")) if x)
+            if span:
+                parts.append(f"limited to {spec['label']} {span}")
+            continue
+        kept, dropped = spec.get("kept") or [], spec.get("dropped") or []
+        if not dropped:
+            continue
+        exclude = len(dropped) <= len(kept)
+        values = dropped if exclude else kept
+        shown = ", ".join(str(v) for v in values[:3])
+        if len(values) > 3:
+            shown += f" and {len(values) - 3} other {spec['label'].lower()}"
+        parts.append(f"excludes {shown}" if exclude else f"is limited to {spec['label']}: {shown}")
+    return "; ".join(parts)
+
+
+def _filter_chip(detail: list[dict], limit: int = 58) -> str:
+    if not detail:
+        return ""
+
+    def _short(value: str, cap: int = 26) -> str:
+        text = str(value).strip()
+        if len(text) <= cap:
+            return text
+        clipped = text[:cap].rsplit(" ", 1)[0].rstrip(" ,-")
+        return (clipped or text[:cap]) + "..."
+
+    def _names(values: list[str], keep: int = 2) -> str:
+        if values and len(_short(values[0])) > 20:
+            keep = 1
+        shown = ", ".join(_short(v) for v in values[:keep])
+        extra = len(values) - keep
+        return shown + (f" +{extra}" if extra > 0 else "")
+
+    parts: list[str] = []
+    for spec in detail:
+        if spec.get("kind") == "date":
+            span = " -> ".join(x for x in (spec.get("start"), spec.get("end")) if x)
+            if span:
+                parts.append(f"{spec['label']}: {span}")
+            continue
+        kept, dropped = spec.get("kept") or [], spec.get("dropped") or []
+        if not dropped:
+            continue
+        parts.append(f"excl. {_names(dropped)}" if len(dropped) <= len(kept) else f"{spec['label']}: {_names(kept)}")
+    if not parts:
+        return ""
+    text = "Filtered - " + " | ".join(parts)
+    return text if len(text) <= limit else text[: limit - 3].rstrip(" ,|") + "..."
+
+
+def _chart_caption(facts: dict) -> str:
+    names = " and ".join(s["label"] for s in facts["series"][:2])
+    if not names:
+        return ""
+    caption = f"{names} by {facts.get('x_label') or 'category'}"
+    keep = facts.get("filter_keep") or []
+    if keep and len(keep) <= 2 and not facts.get("filter_drop_is_smaller"):
+        caption += f" - {', '.join(keep)}"
+    if facts.get("truncated"):
+        caption += f" (top {facts.get('rows_plotted')})"
+    return caption[:90]
+
+
+_LEX_WORD = re.compile(r"[a-z0-9%]+")
+_LEX_STOP = {
+    "the", "a", "an", "and", "or", "of", "in", "on", "for", "to", "by", "at",
+    "with", "is", "are", "was", "were", "this", "that", "these", "those",
+    "from", "per", "vs", "versus", "over", "under", "than", "into", "across",
+    "total", "totals", "value", "values", "metric", "metrics", "amount",
+    "date", "dates", "week", "weeks", "month", "months", "quarter", "year",
+    "period", "periods", "count", "counts", "sum", "avg", "average", "mean",
+    "name", "names", "number", "numbers", "data", "all", "new", "top",
+    "bottom", "rate", "share", "growth", "change", "level", "levels",
+}
+
+
+def _lex_tokens(text: Any) -> set[str]:
+    out = set()
+    for tok in _LEX_WORD.findall(str(text or "").lower()):
+        if tok in _LEX_STOP or len(tok) < 3:
+            continue
+        out.add(tok)
+    return out
+
+
+def chart_lexicon(facts: dict | None) -> dict | None:
+    if not facts:
+        return None
+    entities: set[str] = set()
+    for cat in facts.get("rendered_categories") or []:
+        entities |= _lex_tokens(cat)
+    for value in facts.get("filter_keep") or []:
+        entities |= _lex_tokens(value)
+    measures: set[str] = set()
+    for series in facts.get("series") or []:
+        measures |= _lex_tokens(series.get("label")) | _lex_tokens(series.get("column"))
+    off: set[str] = set()
+    for name in facts.get("dropped_series") or []:
+        off |= _lex_tokens(name)
+    for cat in facts.get("omitted_categories") or []:
+        off |= _lex_tokens(cat)
+    for value in facts.get("filter_drop") or []:
+        off |= _lex_tokens(value)
+    on = entities | measures
+    off = {token for token in off if len(token) >= 4} - on
+    return {"on": on, "entities": entities, "measures": measures, "off": off, "numbers": facts.get("numbers") or set()}
+
+
+def off_chart_mentions(text: str, lex: dict | None) -> list[str]:
+    if not lex or not text:
+        return []
+    toks = _lex_tokens(text)
+    if toks & lex["on"]:
+        return []
+    return sorted(toks & lex["off"])[:3]
+
+
+def chart_relevance(sentence: str, lex: dict | None) -> int:
+    if not lex or not sentence:
+        return 0
+    toks = _lex_tokens(sentence)
+    score = 0
+    if toks & lex["entities"]:
+        score += 2
+    if toks & lex["measures"]:
+        score += 1
+    tokens = _NUM_TOKEN.findall(sentence or "")
+    if tokens:
+        bad = unverified_numbers(sentence, lex["numbers"])
+        score += 2 if len(bad) < len(tokens) else -1
+    if (toks & lex["off"]) and not (toks & lex["on"]):
+        score -= 3
+    return score
+
+
+def grounded_facts_block(df, profile: dict, facts: dict | None) -> str:
+    if not facts or facts.get("frame") is None:
+        return facts_block(df, profile)
+    text = "scope = the plotted chart only; the wider result set is NOT quotable\n" + facts_block(facts["frame"], facts["profile"])
+    constants = (profile or {}).get("constants") or {}
+    if constants:
+        text += "\nquery context (qualifies the chart, not a metric): " + "; ".join(
+            f"{humanize_column(k)}={v}" for k, v in constants.items()
+        )
+    return text
+
+
+_LIST_MARKER_RE = re.compile(r"^(\s*(?:[-*\u2022\u25CF\u25AA]|\d+[.)])\s+)")
+
+
+def grounded_summary(summary: str, facts: dict | None, limit: int = 6000) -> str:
+    text = str(summary or "")
+    lex = chart_lexicon(facts)
+    if not lex or not text.strip():
+        return text[:limit]
+    kept: list[str] = []
+    removed = 0
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            kept.append(line)
+            continue
+        if _HEADING_RE.match(stripped):
+            kept.append(line)
+            continue
+        head = ""
+        body = stripped
+        if ":" in stripped and len(stripped.split(":", 1)[0]) < 42:
+            maybe_head, rest = stripped.split(":", 1)
+            if _SECTION_ALIASES.get(maybe_head.strip().lower().strip("#*_ ")):
+                head = _strip_markdown_display(maybe_head).strip() + ":"
+                body = rest.strip()
+        marker_match = _LIST_MARKER_RE.match(line)
+        marker = marker_match.group(1) if (marker_match and not head) else ""
+        sentences = _sentences(body)
+        if not sentences:
+            kept.append(line)
+            continue
+        on_chart = [sentence for sentence in sentences if not off_chart_mentions(sentence, lex)]
+        removed += len(sentences) - len(on_chart)
+        if not on_chart:
+            if head:
+                kept.append(head)
+            continue
+        kept.append(marker + (head + " " if head else "") + " ".join(on_chart))
+    out = "\n".join(kept).strip()
+    if removed:
+        out += f"\n\n(NOTE: {removed} sentence(s) were removed because they described data the chart does not show. Do not reconstruct them.)"
+    return (out or text)[:limit]
+
+
+def chart_facts_block(facts: dict | None) -> str:
+    if not facts:
+        return "NO_CHART - this slide has no visual. Describe the result set only."
+    lines = [f"type={facts['chart_type']}  x_axis={facts['x_label']}  points_plotted={facts['rows_plotted']}"]
+    if facts.get("title"):
+        lines.append(f"chart_title: {facts['title']}")
+    lines.append("series drawn on the chart:")
+    for series in facts["series"]:
+        unit = f" {series['unit']}" if series["unit"] and series["unit"] != "%" else ("%" if series["unit"] == "%" else "")
+        pct = f"{series['pct_change']:+.1f}%" if series["pct_change"] is not None else "n/a"
+        bits = [
+            f"  {series['label']}:",
+            f"first={compact_number(series['first'])}{unit}",
+            f"last={compact_number(series['last'])}{unit}",
+            f"first->last={pct}",
+            f"max={compact_number(series['max'])}{unit} at {series['max_at']}",
+            f"min={compact_number(series['min'])}{unit} at {series['min_at']}",
+            f"avg={compact_number(series['mean'])}{unit}",
+        ]
+        if series["total"] is not None:
+            bits.append(f"total_shown={compact_number(series['total'])}{unit}")
+        lines.append(" | ".join(bits))
+    cats = facts.get("rendered_categories") or []
+    if cats and not facts.get("x_is_time"):
+        shown = ", ".join(cats[:12])
+        lines.append(f"categories on the chart ({len(cats)}): {shown}" + (" ..." if len(cats) > 12 else ""))
+    elif cats:
+        lines.append(f"x range on the chart: {cats[0]} -> {cats[-1]}")
+    if facts.get("shape_read"):
+        lines.append(f"visible pattern: {facts['shape_read']}")
+    excluded = []
+    if facts.get("filter_text"):
+        excluded.append(f"filtered to {facts['filter_text']}")
+    if facts.get("truncated"):
+        excluded.append(f"top {facts['rows_plotted']} of {facts['rows_available']} {facts['x_label'].lower()} only")
+    if facts.get("dropped_series"):
+        excluded.append("not plotted: " + ", ".join(facts["dropped_series"]))
+    if facts.get("metric_comparison"):
+        excluded.append("one-row result shown as a metric-vs-metric comparison; any growth rate lives in <summary>, not on the chart")
+    if excluded:
+        lines.append("NOT ON THE CHART - " + "; ".join(excluded))
+    return "\n".join(lines)
+
+
+def verify_chart_content(content: dict, df, block: dict, profile: dict, chart: dict | None = None, summary: str | None = None) -> list[str]:
+    problems: list[str] = []
+    frame = chart.get("frame") if chart else None
+    if frame is None:
+        frame = df
+    if summary is None:
+        summary = block.get("summary") or ""
+    allowed = allowed_numbers(frame, summary)
+    lex = chart_lexicon(chart)
+    for field_name in ("headline", "insight", "footnote"):
+        bad = unverified_numbers(content.get(field_name, ""), allowed)
+        if bad:
+            problems.append(f"{field_name} cites unsupported numbers: {bad}")
+    for index, bullet in enumerate(content.get("bullets", [])):
+        bad = unverified_numbers(bullet, allowed)
+        if bad:
+            problems.append(f"bullet {index + 1} cites unsupported numbers: {bad}")
+    for index, kpi in enumerate(content.get("kpis", [])):
+        bad = unverified_numbers(kpi.get("value", ""), allowed)
+        if bad:
+            problems.append(f"kpi {index + 1} value cites unsupported numbers: {bad}")
+    if lex:
+        for field_name in ("headline", "insight"):
+            off = off_chart_mentions(content.get(field_name, ""), lex)
+            if off:
+                problems.append(f"{field_name} names something not on the chart: {', '.join(off)}")
+        for index, bullet in enumerate(content.get("bullets", [])):
+            off = off_chart_mentions(bullet, lex)
+            if off:
+                problems.append(f"bullet {index + 1} names something not on the chart: {', '.join(off)}")
+    fact_profile = (chart or {}).get("profile") or profile
+    has_extremes = bool(fact_profile.get("metrics"))
+    joined = " ".join([content.get("headline", ""), content.get("insight", "")] + list(content.get("bullets", [])))
+    if _SUPERLATIVE.search(joined) and not has_extremes:
+        problems.append("uses a superlative but no min/max fact exists")
+    return problems
+
+
+def fallback_content_with_chart(block: dict, df, profile: dict, cfg: DeckConfig, chart: dict | None = None) -> dict:
+    if not chart:
+        return fallback_content(block, df, profile, cfg)
+    sections = _split_sections(grounded_summary(block.get("summary") or "", chart), getattr(cfg, "hooks", None)) or (block.get("sections") or {})
+    summary = block.get("summary") or ""
+    question = block.get("question") or "Analysis"
+    lex = chart_lexicon(chart)
+    body = sections.get("takeaways") or sections.get("findings") or sections.get("overview") or summary
+    sents = _sentences(body) or _sentences(summary)
+    on_chart = [sentence for sentence in sents if not off_chart_mentions(sentence, lex)]
+    sents = on_chart or sents
+
+    def rank(sentence: str) -> tuple:
+        meta = 1 if _META_SENTENCE.match(sentence) else 0
+        relevance = -chart_relevance(sentence, lex)
+        has_num = 0 if re.search(r"\d", sentence) else 1
+        return (meta, relevance, has_num, len(sentence))
+
+    ordered = sorted(sents, key=rank)
+    headline_src = ordered[0] if ordered else question
+    headline = _condense(headline_src, 120) if ordered else _titlecase_question(question)
+
+    def _key(text: str) -> str:
+        return re.sub(r"[^a-z0-9 ]", "", text.lower())[:48]
+
+    bullets, seen = [], {_key(headline)}
+    for sentence in ordered:
+        condensed = _condense(sentence)
+        key = _key(condensed)
+        if condensed and key not in seen:
+            bullets.append(condensed)
+            seen.add(key)
+        if len(bullets) == cfg.max_bullets:
+            break
+
+    insight = sections.get("implications") or ""
+    if not insight:
+        pool = [x for x in _sentences(sections.get("overview") or summary) if _key(_condense(x)) not in seen and not off_chart_mentions(x, lex)]
+        insight = " ".join(pool[-2:])
+    if not insight and chart.get("shape_read"):
+        insight = chart["shape_read"][:1].upper() + chart["shape_read"][1:] + "."
+    if not insight:
+        insight = headline
+    insight = " ".join(_condense(x, 240) for x in _sentences(insight)) or insight
+    kpis = select_kpis(chart["kpi_frame"], chart["kpi_profile"], cfg)
+    return {
+        "eyebrow": _eyebrow_for(question),
+        "title": _titlecase_question(question),
+        "headline": headline,
+        "bullets": bullets,
+        "kpis": kpis,
+        "insight": re.sub(r"\s+", " ", insight).strip()[:520],
+        "footnote": _incomplete_period_note(df, profile),
+        "basis": _basis_from_text(summary, profile.get("columns") or []),
+        "chart_caption": chart.get("caption", ""),
+    }
+
+
+def _ground_to_chart(content: dict, chart: dict | None, cfg: DeckConfig | None = None) -> dict:
+    lex = chart_lexicon(chart)
+    if not lex:
+        return content
+    bullets = [bullet for bullet in (content.get("bullets") or []) if not off_chart_mentions(bullet, lex)]
+    if not bullets and chart.get("shape_read"):
+        read = chart["shape_read"]
+        bullets = [read[:1].upper() + read[1:] + "."]
+    content["bullets"] = bullets
+    kpis = [
+        kpi for kpi in (content.get("kpis") or [])
+        if not off_chart_mentions(f"{kpi.get('label', '')} {kpi.get('value', '')}", lex)
+    ]
+    if not kpis and chart.get("frame") is not None:
+        kpis = select_kpis(chart["frame"], chart["profile"], cfg or DeckConfig())
+    content["kpis"] = kpis
+    read = chart.get("shape_read") or ""
+    read = (read[:1].upper() + read[1:] + ".") if read else ""
+    if off_chart_mentions(content.get("headline", ""), lex):
+        content["headline"] = (bullets[0] if bullets else read) or content.get("headline", "")
+    if off_chart_mentions(content.get("insight", ""), lex):
+        content["insight"] = read or content.get("insight", "")
+    return content
+
+
+def _apply_chart_caveats(content: dict, chart: dict | None, cfg: DeckConfig | None = None) -> dict:
+    if not chart:
+        return content
+    content = _ground_to_chart(content, chart, cfg)
+    notes = [note for note in [(content.get("footnote") or "").strip()] if note]
+
+    def _add(note: str) -> None:
+        if note and note.lower() not in " ".join(notes).lower():
+            notes.append(note)
+
+    if chart.get("filter_phrase"):
+        _add(f"Chart {chart['filter_phrase']}.")
+    elif chart.get("filter_text"):
+        _add(f"Chart filtered to {chart['filter_text']}.")
+    if chart.get("truncated"):
+        _add(f"Chart shows the top {chart['rows_plotted']} of {chart['rows_available']} {_axis_noun(chart['x_label'])} by value.")
+    if chart.get("dropped_series"):
+        names = ", ".join(chart["dropped_series"][:3])
+        _add(f"{names} {'is' if len(chart['dropped_series']) == 1 else 'are'} not plotted.")
+    content["footnote"] = " ".join(notes)[:190]
+    if not (content.get("chart_caption") or "").strip():
+        content["chart_caption"] = chart.get("caption", "")
+    return content
+
+
+def _finalise_chart_content(content: dict, baseline: dict, df, profile: dict, cfg: DeckConfig | None = None, chart: dict | None = None) -> dict:
+    forced_note = _incomplete_period_note(df, profile)
+    if forced_note and forced_note.lower() not in (content.get("footnote") or "").lower():
+        content["footnote"] = forced_note
+    if not content.get("basis") or content["basis"] == "Not stated":
+        content["basis"] = baseline["basis"]
+    if not content.get("bullets"):
+        content["bullets"] = baseline["bullets"]
+    if not content.get("headline"):
+        content["headline"] = baseline["headline"]
+    if not content.get("eyebrow"):
+        content["eyebrow"] = baseline["eyebrow"]
+    kpi_df = chart["kpi_frame"] if chart else df
+    kpi_profile = chart["kpi_profile"] if chart else profile
+    content = enforce_content_rules(content, kpi_df, kpi_profile, cfg or DeckConfig())
+    return _apply_chart_caveats(content, chart, cfg or DeckConfig())
+
+
+def generate_slide_content_with_chart(block: dict, cfg: DeckConfig, df, profile: dict, chart: dict | None = None) -> dict:
+    if not chart:
+        return generate_slide_content(block, cfg, df, profile)
+    baseline = fallback_content_with_chart(block, df, profile, cfg, chart)
+    provider = _resolve_provider(cfg)
+    summary_text = grounded_summary(block.get("summary") or "", chart)
+    if provider == "none":
+        baseline = enforce_content_rules(baseline, chart["kpi_frame"], chart["kpi_profile"], cfg)
+        return _apply_chart_caveats(baseline, chart, cfg)
+    user = USER_PROMPT.format(
+        question=block.get("question", ""),
+        summary=summary_text or "(no summary provided)",
+        facts=grounded_facts_block(df, profile, chart),
+        columns=", ".join(map(str, profile.get("columns") or [])) or "(none)",
+        has_chart="true",
+    )
+    messages = [{"role": "user", "content": user}]
+    content, problems = None, ["no response"]
+    for attempt in range(cfg.llm_max_retries + 1):
+        reply = _call_llm(SYSTEM_PROMPT, messages, cfg)
+        if reply is None:
+            break
+        raw = extract_json(reply)
+        if raw is None:
+            problems = ["reply was not parseable JSON"]
+        else:
+            content = coerce_content(raw, block, cfg)
+            problems = verify_chart_content(content, df, block, profile, chart, summary_text) if cfg.verify_numbers else []
+            if not problems:
+                return _finalise_chart_content(content, baseline, df, profile, cfg, chart)
+        if attempt < cfg.llm_max_retries:
+            messages = messages + [
+                {"role": "assistant", "content": reply},
+                {"role": "user", "content": _REPAIR_PROMPT.format(problem="\n".join(problems))},
+            ]
+    if content is None:
+        baseline = enforce_content_rules(baseline, chart["kpi_frame"], chart["kpi_profile"], cfg)
+        return _apply_chart_caveats(baseline, chart, cfg)
+    for problem in problems:
+        if "not on the chart" in problem and problem.startswith("headline"):
+            content["headline"] = baseline["headline"]
+        elif "not on the chart" in problem and problem.startswith("insight"):
+            content["insight"] = baseline["insight"]
+        elif problem.startswith("bullet"):
+            content["bullets"] = baseline["bullets"]
+        elif problem.startswith("kpi"):
+            content["kpis"] = baseline["kpis"]
+        elif problem.startswith("headline"):
+            content["headline"] = baseline["headline"]
+        elif problem.startswith("insight"):
+            content["insight"] = baseline["insight"]
+    return _finalise_chart_content(content, baseline, df, profile, cfg, chart)
+
+
+def _resolved_figure_for_slide(render: dict | None, theme: Theme, target_w_in: float, target_h_in: float, cfg: DeckConfig) -> tuple[Any, int, int] | None:
+    if not render or render.get("fig") is None:
+        return None
+    fig = render.get("fig")
+    px_w = int(max(320, min(cfg.chart_max_px, target_w_in * 96)))
+    px_h = int(max(220, target_h_in * 96))
+    hooks = getattr(cfg, "hooks", None)
+    polished = False
+    if cfg.use_viz_polish_layout and getattr(hooks, "viz_layout", None):
+        try:
+            fig.update_layout(width=px_w, height=px_h)
+            result = _call_viz_layout(hooks.viz_layout, fig, render.get("df_plot") or render.get("df"), force_labels=cfg.chart_force_labels)
+            if result is not None:
+                fig = result
+            polished = True
+        except Exception as exc:
+            log.warning("viz_layout failed (%s) - falling back to built-in restyle", exc)
+    if polished:
+        _apply_brand_colors(fig, theme)
+        axis_modes = _format_numeric_axes(fig)
+        plot_w, plot_h = _fit_polished_to_panel(fig, px_w, px_h)
+        _fit_axis_titles(fig, px_w, px_h, plot_w, plot_h)
+        thinner = _resolve_label_thinner(hooks)
+        if thinner:
+            try:
+                thinner(fig, plot_w, plot_h)
+            except Exception as exc:
+                log.warning("label thinning failed (%s)", exc)
+        _retemplate_labels(fig, axis_modes)
+    else:
+        _restyle_figure(fig, theme, base_pt=10.0, px_w=px_w, px_h=px_h)
+    fig = _json_safe_figure(fig)
+    return fig, px_w, px_h
+
+
+def build_chart_editor_payload(question: str, sql_payload: dict[str, Any], visualization_code: str | None, chart_selection: dict | None = None) -> dict[str, Any]:
+    df = to_dataframe(sql_payload)
+    if df is None or len(df) == 0:
+        return {
+            "editable": False,
+            "no_visualization": True,
+            "no_rows_match": False,
+            "reason": "Empty result set.",
+            "figure": {},
+            "chart_selection": {},
+            "default_selection": {},
+            "x_options": [],
+            "y_options": [],
+            "chart_options": [],
+            "filter_specs": [],
+        }
+    payload = ce.build_interactive_chart_payload(df, visualization_code, question=question, selection=chart_selection)
+    figure = payload.get("figure")
+    payload["figure"] = _plotly_figure_json(figure) if figure is not None else {}
+    return payload
+
 def slice_turns(messages: Sequence[Any], n_turns: int = 1) -> list[Any]:
     """
     The last *n_turns* complete question/answer turns.
@@ -6147,6 +7121,7 @@ def build_deck_bytes(messages: Iterable[Any],
 
 def build_slide_data(messages: Iterable[Any],
                      chart_path_overrides: list[str | None] | None = None,
+                     chart_selection_overrides: list[dict[str, Any] | None] | dict[str, dict[str, Any]] | None = None,
                      cancel_check: Any = None,
                      chart_render_spec_mode: bool = False) -> list[dict]:
     """
@@ -6172,13 +7147,25 @@ def build_slide_data(messages: Iterable[Any],
     for index, block in enumerate(blocks):
         if cancel_check:
             cancel_check()
+        selected_block = dict(block)
         override = (
             chart_path_overrides[index]
             if isinstance(chart_path_overrides, list) and index < len(chart_path_overrides)
             else None
         )
+        selection_override = (
+            chart_selection_overrides[index]
+            if isinstance(chart_selection_overrides, list) and index < len(chart_selection_overrides)
+            else None
+        )
+        if not selection_override and isinstance(chart_selection_overrides, dict):
+            assistant_id = str(block.get("assistant_message_id") or "").strip()
+            candidate = chart_selection_overrides.get(assistant_id) if assistant_id else None
+            selection_override = candidate if isinstance(candidate, dict) else None
+        if isinstance(selection_override, dict) and selection_override:
+            selected_block["viz_selection"] = selection_override
         model = build_slide_model(
-            block,
+            selected_block,
             cfg,
             deck,
             chart_path_override=override,
@@ -6334,5 +7321,6 @@ __all__ = [
     "slice_turns", "deck_filename",
     "parse_conversation", "extract_export_context", "extract_theme", "extract_theme_from_pptx",
     "generate_slide_content", "build_chart_render_spec", "render_chart", "to_dataframe",
+    "build_chart_editor_payload",
     "profile_dataframe", "SYSTEM_PROMPT", "USER_PROMPT",
 ]

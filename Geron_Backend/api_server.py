@@ -105,6 +105,8 @@ class PptGenerationRequest(BaseModel):
     disposition: Optional[str] = None
     chart_image_base64: Optional[str] = None
     chart_images_base64: Optional[list[str]] = None
+    chart_selection: Optional[dict[str, Any]] = None
+    chart_selection_overrides: Optional[list[dict[str, Any]]] = None
     bundle_id: Optional[str] = None
     request_id: Optional[str] = None
 
@@ -113,8 +115,18 @@ class PptPrepareRequest(BaseModel):
     thread_id: str = Field(..., min_length=1)
     message_id: Optional[str] = None
     mode: str = "slide"
+    chart_selection: Optional[dict[str, Any]] = None
+    chart_selection_overrides: Optional[list[dict[str, Any]]] = None
     bundle_id: str = Field(..., min_length=1)
     request_id: Optional[str] = None
+
+
+class ChartRenderRequest(BaseModel):
+    assistant_message_id: Optional[str] = None
+    question: Optional[str] = None
+    sql_result: dict[str, Any] = Field(default_factory=dict)
+    visualization_code: Optional[str] = None
+    chart_selection: Optional[dict[str, Any]] = None
 
 
 class PptCancelRequest(BaseModel):
@@ -1924,6 +1936,7 @@ def _build_langchain_messages_from_cached(cached_messages: list[dict[str, Any]])
         if role != "assistant":
             continue
 
+        assistant_message_id = str(entry.get("id") or "").strip() or None
         assistant_text: Optional[str] = None
         sql_query: Optional[str] = None
         result_summary: Optional[str] = None
@@ -1982,6 +1995,7 @@ def _build_langchain_messages_from_cached(cached_messages: list[dict[str, Any]])
                         "data": sql_result,
                         "sql_query": sql_query,
                         "result_summary": result_summary,
+                        "assistant_message_id": assistant_message_id,
                     },
                 )
             )
@@ -1994,6 +2008,8 @@ def _build_langchain_messages_from_cached(cached_messages: list[dict[str, Any]])
                 visualization_kwargs["code"] = visualization_code
             if visualization_figure:
                 visualization_kwargs["figure"] = visualization_figure
+            if assistant_message_id:
+                visualization_kwargs["assistant_message_id"] = assistant_message_id
             reconstructed.append(
                 AIMessage(
                     content="Visualization",
@@ -2097,6 +2113,16 @@ def _build_plotly_figure_json(
 ) -> Optional[dict[str, Any]]:
     if not visualization_code or not sql_result:
         return None
+
+    deterministic_payload = _build_deterministic_chart_payload(
+        None,
+        sql_result,
+        visualization_code,
+    )
+    if isinstance(deterministic_payload, dict):
+        deterministic_figure = deterministic_payload.get("figure")
+        if isinstance(deterministic_figure, dict) and deterministic_figure.get("data"):
+            return deterministic_figure
 
     tenant = _get_current_tenant()
     viz_polish_module = _load_tenant_viz_polish_module(tenant)
@@ -3581,6 +3607,105 @@ def _select_latest_sql_user_assistant_pair(
     raise HTTPException(status_code=404, detail="No SQL-bearing assistant message found for thread")
 
 
+def _select_messages_for_ppt_mode(
+    cached_messages: list[dict[str, Any]],
+    *,
+    mode: str,
+    assistant_message_id: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    normalized_mode = (mode or "").strip().lower()
+    if assistant_message_id:
+        return _select_user_assistant_pair(cached_messages, assistant_message_id)
+    if normalized_mode == "deck":
+        _ppt_debug("selected full thread for deck mode messages=%d", len(cached_messages))
+        return list(cached_messages)
+    return _select_latest_sql_user_assistant_pair(cached_messages)
+
+
+def _coerce_chart_selection(value: Any) -> Optional[dict[str, Any]]:
+    return dict(value) if isinstance(value, dict) and value else None
+
+
+def _coerce_chart_selection_overrides(
+    value: Any,
+) -> Optional[list[dict[str, Any] | None] | dict[str, dict[str, Any]]]:
+    if not isinstance(value, list):
+        return None
+
+    aligned: list[dict[str, Any] | None] = []
+    by_assistant_id: dict[str, dict[str, Any]] = {}
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        assistant_message_id = str(entry.get("assistantMessageId") or "").strip()
+        chart_selection = _coerce_chart_selection(entry.get("chartSelection"))
+        if assistant_message_id and chart_selection:
+            by_assistant_id[assistant_message_id] = chart_selection
+        raw_index = entry.get("slideIndex")
+        try:
+            slide_index = int(raw_index)
+        except (TypeError, ValueError):
+            continue
+        if slide_index < 0:
+            continue
+        while len(aligned) <= slide_index:
+            aligned.append(None)
+        aligned[slide_index] = chart_selection
+
+    return aligned or by_assistant_id or None
+
+
+def _build_selection_override_list(
+    *,
+    mode: str,
+    chart_selection: Any = None,
+    chart_selection_overrides: Any = None,
+) -> Optional[list[dict[str, Any] | None] | dict[str, dict[str, Any]]]:
+    overrides = _coerce_chart_selection_overrides(chart_selection_overrides)
+    if overrides is not None:
+        return overrides
+
+    selection = _coerce_chart_selection(chart_selection)
+    if selection is None:
+        return None
+
+    if (mode or "").strip().lower() == "slide":
+        return [selection]
+    return None
+
+
+def _build_deterministic_chart_payload(
+    question: Optional[str],
+    sql_result: Optional[dict[str, Any]],
+    visualization_code: Optional[str],
+    chart_selection: Optional[dict[str, Any]] = None,
+) -> Optional[dict[str, Any]]:
+    if not isinstance(sql_result, dict) or not sql_result:
+        return None
+
+    tenant = _get_current_tenant()
+    deck_module = _import_tenant_module(tenant, "deck")
+    builder = getattr(deck_module, "build_chart_editor_payload", None)
+    if not callable(builder):
+        return None
+
+    previous_env = _apply_tenant_env(tenant)
+    try:
+        payload = builder(
+            question or "",
+            sql_result,
+            visualization_code,
+            chart_selection=chart_selection,
+        )
+    except Exception as exc:
+        logger.warning("Deterministic chart payload failed for %s: %s", tenant, exc)
+        return None
+    finally:
+        _restore_tenant_env(previous_env)
+
+    return payload if isinstance(payload, dict) else None
+
+
 def _sanitize_filename(value: str, fallback: str = "presentation") -> str:
     cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "_", (value or "").strip())
     cleaned = re.sub(r"_+", "_", cleaned).strip("_")
@@ -3687,11 +3812,14 @@ def _generate_ppt_file(
     messages: list[Any],
     output_path: str,
     chart_path_overrides: Optional[list[Optional[str]]] = None,
+    chart_selection_overrides: Optional[list[dict[str, Any] | None] | dict[str, dict[str, Any]]] = None,
     cancel_check: Optional[Callable[[], None]] = None,
 ) -> str:
     tenant = _get_current_tenant()
     deck_module = _import_tenant_module(tenant, "deck")
     build_ppt = deck_module.build_ppt
+    build_slide_data = getattr(deck_module, "build_slide_data", None)
+    build_ppt_from_slide_data = getattr(deck_module, "build_ppt_from_slide_data", None)
 
     template_path = _resolve_asset_path(os.getenv("PPT_TEMPLATE_PATH", ""))
     logo_path = _resolve_asset_path(os.getenv("PPT_LOGO_PATH", ""))
@@ -3706,16 +3834,26 @@ def _generate_ppt_file(
         kwargs["cancel_check"] = cancel_check
 
     _ppt_debug(
-        "api: generate start messages=%d output=%s template=%s logo=%s chart_overrides=%d",
+        "api: generate start messages=%d output=%s template=%s logo=%s chart_overrides=%d selection_overrides=%d",
         len(messages),
         output_path,
         template_path,
         logo_path,
         len(chart_path_overrides or []),
+        len(chart_selection_overrides or []),
     )
     previous_env = _apply_tenant_env(tenant)
     try:
-        result = build_ppt(messages, **kwargs)
+        if chart_selection_overrides and callable(build_slide_data) and callable(build_ppt_from_slide_data):
+            slides = build_slide_data(
+                messages,
+                chart_path_overrides=chart_path_overrides,
+                chart_selection_overrides=chart_selection_overrides,
+                cancel_check=cancel_check,
+            )
+            result = build_ppt_from_slide_data(slides, **kwargs)
+        else:
+            result = build_ppt(messages, **kwargs)
     except Exception:
         _ppt_debug("api: generate error output=%s", output_path)
         raise
@@ -3769,6 +3907,7 @@ def _build_preview_payload(
 def _prepare_ppt_bundle(
     messages: list[Any],
     bundle_id: str,
+    chart_selection_overrides: Optional[list[dict[str, Any] | None] | dict[str, dict[str, Any]]] = None,
     cancel_check: Optional[Callable[[], None]] = None,
 ) -> dict[str, Any]:
     tenant = _get_current_tenant()
@@ -3785,6 +3924,7 @@ def _prepare_ppt_bundle(
         try:
             slides = build_slide_data(
                 messages,
+                chart_selection_overrides=chart_selection_overrides,
                 chart_render_spec_mode=True,
                 cancel_check=cancel_check,
             )
@@ -3797,6 +3937,7 @@ def _prepare_ppt_bundle(
             )
             slides = build_slide_data(
                 messages,
+                chart_selection_overrides=chart_selection_overrides,
                 cancel_check=cancel_check,
             )
     finally:
@@ -3812,6 +3953,7 @@ def _prepare_ppt_bundle(
         if isinstance(spec, dict):
             chart_specs.append({
                 "slideIndex": index - 1,
+                "assistantMessageId": slide.get("assistant_message_id"),
                 "figure": spec.get("figure"),
                 "width": spec.get("width"),
                 "height": spec.get("height"),
@@ -3874,6 +4016,7 @@ def _build_ppt_bundle(
     messages: list[Any],
     output_path: str,
     chart_path_overrides: Optional[list[Optional[str]]] = None,
+    chart_selection_overrides: Optional[list[dict[str, Any] | None] | dict[str, dict[str, Any]]] = None,
     cancel_check: Optional[Callable[[], None]] = None,
     prepared_slides: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
@@ -3916,6 +4059,7 @@ def _build_ppt_bundle(
             slides = build_slide_data(
                 messages,
                 chart_path_overrides=chart_path_overrides,
+                chart_selection_overrides=chart_selection_overrides,
                 cancel_check=cancel_check,
             )
         for index, slide in enumerate(slides, 1):
@@ -3957,6 +4101,52 @@ def health() -> dict[str, Any]:
             "lastError": _tenant_db_last_error.get(tenant),
             "lastSuccessAt": _tenant_db_last_success_at.get(tenant),
         },
+    }
+
+
+@app.post("/api/v1/chart/render")
+def render_chart(request: ChartRenderRequest, raw_request: Request) -> dict[str, Any]:
+    _get_request_user(raw_request)
+
+    payload = _build_deterministic_chart_payload(
+        request.question,
+        request.sql_result,
+        request.visualization_code,
+        chart_selection=_coerce_chart_selection(request.chart_selection),
+    )
+    if isinstance(payload, dict):
+        return {
+            "figure": payload.get("figure") or {},
+            "chart_selection": payload.get("chart_selection") or {},
+            "default_selection": payload.get("default_selection") or {},
+            "x_options": payload.get("x_options") or [],
+            "y_options": payload.get("y_options") or [],
+            "chart_options": payload.get("chart_options") or [],
+            "filter_specs": payload.get("filter_specs") or [],
+            "editable": bool(payload.get("editable")),
+            "no_visualization": bool(payload.get("no_visualization")),
+            "no_rows_match": bool(payload.get("no_rows_match")),
+            "reason": payload.get("reason"),
+            "assistant_message_id": request.assistant_message_id,
+        }
+
+    legacy_figure = _build_plotly_figure_json(
+        request.visualization_code,
+        request.sql_result,
+    )
+    return {
+        "figure": legacy_figure or {},
+        "chart_selection": {},
+        "default_selection": {},
+        "x_options": [],
+        "y_options": [],
+        "chart_options": [],
+        "filter_specs": [],
+        "editable": False,
+        "no_visualization": legacy_figure is None,
+        "no_rows_match": False,
+        "reason": None if legacy_figure else "Chart editing is unavailable for this legacy visualization.",
+        "assistant_message_id": request.assistant_message_id,
     }
 
 
@@ -4775,20 +4965,26 @@ def prepare_ppt(
         if mode == "slide" and not assistant_message_id:
             raise HTTPException(status_code=400, detail="message_id is required")
 
-        pair_messages = (
-            _select_user_assistant_pair(cached_messages, assistant_message_id)
-            if assistant_message_id
-            else _select_latest_sql_user_assistant_pair(cached_messages)
+        selected_messages = _select_messages_for_ppt_mode(
+            cached_messages,
+            mode=mode,
+            assistant_message_id=assistant_message_id,
+        )
+        chart_selection_overrides = _build_selection_override_list(
+            mode=mode,
+            chart_selection=request.chart_selection,
+            chart_selection_overrides=request.chart_selection_overrides,
         )
 
         cancel_check()
-        langchain_messages = _build_langchain_messages_from_cached(pair_messages)
+        langchain_messages = _build_langchain_messages_from_cached(selected_messages)
         if not langchain_messages:
             raise HTTPException(status_code=404, detail="No PPT content available")
 
         result = _prepare_ppt_bundle(
             langchain_messages,
             bundle_id,
+            chart_selection_overrides=chart_selection_overrides,
             cancel_check=cancel_check,
         )
         chart_specs = result.get("chart_specs") or []
@@ -4844,8 +5040,12 @@ def create_slide_ppt(
             raise HTTPException(status_code=404, detail="No messages found for thread")
 
         cancel_check()
-        pair_messages = _select_user_assistant_pair(cached_messages, assistant_message_id)
-        langchain_messages = _build_langchain_messages_from_cached(pair_messages)
+        selected_messages = _select_messages_for_ppt_mode(
+            cached_messages,
+            mode="slide",
+            assistant_message_id=assistant_message_id,
+        )
+        langchain_messages = _build_langchain_messages_from_cached(selected_messages)
         if not langchain_messages:
             raise HTTPException(status_code=404, detail="No slide content available")
 
@@ -4853,6 +5053,11 @@ def create_slide_ppt(
         if chart_overrides is None:
             chart_override_path = _decode_chart_image_base64(request.chart_image_base64)
             chart_overrides = [chart_override_path] if chart_override_path else None
+        chart_selection_overrides = _build_selection_override_list(
+            mode="slide",
+            chart_selection=request.chart_selection,
+            chart_selection_overrides=request.chart_selection_overrides,
+        )
 
         output_path = _build_temp_ppt_path()
         if bundle_id:
@@ -4866,6 +5071,7 @@ def create_slide_ppt(
                         langchain_messages,
                         output_path,
                         chart_path_overrides=chart_overrides,
+                        chart_selection_overrides=chart_selection_overrides,
                         cancel_check=cancel_check,
                         prepared_slides=prepared_slides,
                     )
@@ -4887,6 +5093,7 @@ def create_slide_ppt(
                 langchain_messages,
                 output_path,
                 chart_path_overrides=chart_overrides,
+                chart_selection_overrides=chart_selection_overrides,
                 cancel_check=cancel_check,
             )
 
@@ -4934,14 +5141,14 @@ def create_deck_ppt(
             raise HTTPException(status_code=404, detail="No messages found for thread")
 
         assistant_message_id = _normalize_optional_text(request.message_id)
-        pair_messages = (
-            _select_user_assistant_pair(cached_messages, assistant_message_id)
-            if assistant_message_id
-            else _select_latest_sql_user_assistant_pair(cached_messages)
+        selected_messages = _select_messages_for_ppt_mode(
+            cached_messages,
+            mode="deck",
+            assistant_message_id=assistant_message_id,
         )
 
         cancel_check()
-        langchain_messages = _build_langchain_messages_from_cached(pair_messages)
+        langchain_messages = _build_langchain_messages_from_cached(selected_messages)
         if not langchain_messages:
             raise HTTPException(status_code=404, detail="No deck content available")
 
@@ -4949,6 +5156,11 @@ def create_deck_ppt(
         if chart_overrides is None:
             chart_override_path = _decode_chart_image_base64(request.chart_image_base64)
             chart_overrides = [chart_override_path] if chart_override_path else None
+        chart_selection_overrides = _build_selection_override_list(
+            mode="deck",
+            chart_selection=request.chart_selection,
+            chart_selection_overrides=request.chart_selection_overrides,
+        )
 
         output_path = _build_temp_ppt_path()
         if bundle_id:
@@ -4962,6 +5174,7 @@ def create_deck_ppt(
                         langchain_messages,
                         output_path,
                         chart_path_overrides=chart_overrides,
+                        chart_selection_overrides=chart_selection_overrides,
                         cancel_check=cancel_check,
                         prepared_slides=prepared_slides,
                     )
@@ -4983,6 +5196,7 @@ def create_deck_ppt(
                 langchain_messages,
                 output_path,
                 chart_path_overrides=chart_overrides,
+                chart_selection_overrides=chart_selection_overrides,
                 cancel_check=cancel_check,
             )
 

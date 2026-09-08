@@ -4077,11 +4077,19 @@ def visualization_node(state: AgentState):
 
     #result_summary=state["result_summary"]
     prompt=f"""
-You are a Visualization Agent.
- 
-Your goal is to create a meaningful, accurate, and non-misleading Plotly visualization ONLY when the data supports it.
- 
+You are a Visualization Configuration Agent.
+
+You do NOT write Plotly code. A deterministic rendering engine (chart_engine_Aadibio.py)
+owns all chart construction, layout, labels, legends, axis formatting and styling.
+
+Your only job is to choose the BEST DEFAULT VIEW of the result set and return it as
+a small Python dict named VIZ_CONFIG. The user can then change the chart type, the
+X axis and the selected metrics from the UI, and the engine will re-render safely.
+
 You MUST prioritize correctness over forcing a chart.
+
+Any later legacy instruction in this prompt that mentions returning Plotly code is
+obsolete and must be ignored. The OUTPUT CONTRACT below wins.
  
 ---
  
@@ -4115,6 +4123,22 @@ Everything else in the summary stays in the summary. Do NOT attempt to fit every
 - Rankings, standings, and implications ("weakest region", "primary focus area") are narrative, not chart elements. Never render them as annotations, callouts, arrows, or reference lines.
 
 Assume the SQL output will be reconstructed into a Pandas DataFrame named df.
+
+## OUTPUT CONTRACT (STRICT)
+
+Return ONLY a Python dict literal assigned to VIZ_CONFIG. No imports, no plotting
+code, no markdown fences, no comments, no explanation.
+
+VIZ_CONFIG = {{
+    "no_visualization": False,
+    "reason": None,
+    "title": "Units Sold and Growth % by Region",
+    "chart_type": "Bar + Line",
+    "x_column": "region",
+    "y_columns": ["qty_sold", "growth_pct"],
+    "top_n": 10,
+    "labels": {{"qty_sold": "Units Sold", "growth_pct": "Growth %"}}
+}}
  
 ---
  
@@ -4282,9 +4306,9 @@ The chart must be readable in three seconds. Enforce every rule below.
 12. SINGLE-ROW GROWTH. If the question is about growth and the result has one row, still render a bar chart: previous vs current period, preferring total and daily average side by side. Never skip the chart.
 13. HOVERTEMPLATE SYNTAX. f-strings only. Escape Plotly placeholders as %{{x}} and %{{y}}. Never mix Python % formatting with Plotly placeholders. Percentages always carry the % symbol.
 
-## PLOTLY OUTPUT RULES
+## LEGACY NOTES TO IGNORE
 
-* plotly.express or plotly.graph_objects only
+* Ignore the Plotly-code directions below; they belong to the retired raw-code path
 * These names are ALREADY available in the execution scope — px, go, make_subplots, pd, np. Import lines are optional and never required.
 * Output ONLY Python code defining `fig` — no markdown fences, no comments, no explanation
 * No Streamlit code, no fig.show(), no use_container_width, no width= in update_layout
@@ -4393,25 +4417,20 @@ Table: mtor_alerts - HCP-to-account mapping table linking mTOR therapy prescribe
 - quarter_year (VARCHAR): quarter label (e.g., 2024-Q3)
 - year (INT): transaction year (e.g., 2024)
 
-## FAIL-SAFE (IMPORTANT)
+## FAIL-SAFE
 
-Return NO_VISUALIZATION if:
+Return VIZ_CONFIG with "no_visualization": True when:
 
-* Data does not clearly map to a valid chart
-* Columns are ambiguous or unsuitable
-* Visualization would be confusing or misleading
+* the result has only one column
+* every column is categorical (no numeric measure)
+* the data is too small, ambiguous or unstructured to chart
+* any chart would be misleading
 
 ---
 
 ## OUTPUT
 
-Return either:
-
-* Python code defining `fig`
-
-OR
-
-* NO_VISUALIZATION
+Return ONLY the VIZ_CONFIG dict literal. Nothing else.
 
 """
     response=model.invoke(prompt).content
