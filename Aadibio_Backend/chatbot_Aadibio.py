@@ -9,16 +9,20 @@ from dotenv import load_dotenv
 from langgraph.checkpoint.memory import MemorySaver
 from typing import Any, Dict, List
 import numpy as np
+import base64
 import json
 import os
 from openai import OpenAI
 import plotly.express as px
+import pandas as pd
 import snowflake.connector
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import serialization
 from typing import TypedDict, Literal, Optional, List
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 # Access the key
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 model = ChatOpenAI(model="gpt-5.4")
 openai_api_key = os.getenv("OPENAI_API_KEY")
 from rapidfuzz import process, fuzz
@@ -29,13 +33,48 @@ def _env_or_default(name: str, default: str) -> str:
     return value.strip() if value and value.strip() else default
 
 
+def _load_private_key() -> bytes:
+    private_key_b64 = os.getenv("SNOWFLAKE_PRIVATE_KEY_B64")
+    private_key_pem = os.getenv("SNOWFLAKE_PRIVATE_KEY_PEM")
+    private_key_path = _env_or_default(
+        "SNOWFLAKE_PRIVATE_KEY_PATH",
+        os.path.join(os.path.dirname(__file__), "snowflake_keys", "rsa_key.p8"),
+    )
+    private_key_passphrase = _env_or_default(
+        "SNOWFLAKE_PRIVATE_KEY_PASSPHRASE",
+        "Murtaza@1971",
+    )
+
+    if private_key_b64:
+        key_data = base64.b64decode(private_key_b64)
+    elif private_key_pem:
+        key_data = private_key_pem.encode()
+    else:
+        with open(private_key_path, "rb") as key_file:
+            key_data = key_file.read()
+
+    private_key = serialization.load_pem_private_key(
+        key_data,
+        password=private_key_passphrase.encode(),
+        backend=default_backend(),
+    )
+
+    return private_key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+
 SNOWFLAKE_CONFIG = {
     "user": _env_or_default("SNOWFLAKE_USER", "ahusain"),
-    "password": _env_or_default("SNOWFLAKE_PASSWORD", "Murtaza@40401059"),
     "account": _env_or_default("SNOWFLAKE_ACCOUNT", "ua60309.south-central-us.azure"),
+    "private_key": _load_private_key(),
     "warehouse": _env_or_default("SNOWFLAKE_WAREHOUSE", "AADIBIO_COMPUTE"),
     "database": _env_or_default("SNOWFLAKE_DATABASE", "AADIBIO_CAI"),
     "schema": _env_or_default("SNOWFLAKE_SCHEMA", "AADIBIO_CAI_SCHEMA"),
+    "role": _env_or_default("SNOWFLAKE_ROLE", "CONVERSATIONAL_AI"),
+    "client_session_keep_alive": True,
 }
 
 # ---------- Global Dictionary ----------
@@ -54,11 +93,10 @@ def load_masking_table(table_name: str = "MASK_MAPPING") -> dict:
     global MASKING_TABLE_DICT
 
     try:
-        conn   = snowflake.connector.connect(**SNOWFLAKE_CONFIG)
-        cursor = conn.cursor()
-
-        cursor.execute(f"SELECT column_name, original_value FROM {table_name}")
-        rows = cursor.fetchall()
+        with snowflake.connector.connect(**SNOWFLAKE_CONFIG) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(f"SELECT column_name, original_value FROM {table_name}")
+                rows = cursor.fetchall()
 
         # Build dictionary — group original_values under each column_name
         result = defaultdict(list)
@@ -74,10 +112,6 @@ def load_masking_table(table_name: str = "MASK_MAPPING") -> dict:
     except Exception as e:
         print(f"❌ Failed to load masking table: {e}")
         raise
-
-    finally:
-        cursor.close()
-        conn.close()
 
     return MASKING_TABLE_DICT
 
@@ -372,23 +406,13 @@ def process_user_query(user_query):
     return apply_corrections_to_query(user_query, corrections)
 
 
-def run_snowflake_query(query):
-    conn = snowflake.connector.connect(**SNOWFLAKE_CONFIG)
-
-    cursor = conn.cursor()
-    cursor.execute(query)
-
-    # Fetch data
-    data = cursor.fetchall()
-    columns = [col[0] for col in cursor.description]
-
-    # Convert to DataFrame
-    df = pd.DataFrame(data, columns=columns)
-
-    cursor.close()
-    conn.close()
-
-    return df
+def run_snowflake_query(query: str) -> pd.DataFrame:
+    with snowflake.connector.connect(**SNOWFLAKE_CONFIG) as conn:
+        with conn.cursor() as cur:
+            cur.execute(query)
+            rows = cur.fetchall()
+            columns = [col[0] for col in cur.description]
+            return pd.DataFrame(rows, columns=columns)
 
 
 
@@ -816,7 +840,6 @@ def build_rag_examples(user_input, intent):
 
     return sql_generator_rag_examples_text, query_decomposer_rag_examples_text, relevant_questions
 
-import pandas as pd
 from typing import Dict, Any
 
 

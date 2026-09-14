@@ -8,6 +8,7 @@ langgraph-checkpoint-postgres
 psycopg[binary]
 psycopg-pool
 snowflake-connector-python
+cryptography
 mysql-connector-python
 faiss-cpu
 fastapi

@@ -1,9 +1,9 @@
 from dotenv import load_dotenv
-load_dotenv()
 from langgraph.graph import StateGraph, START, END
 from langchain_openai import ChatOpenAI
 from typing import TypedDict
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+import base64
 import json
 import os
 from datetime import datetime, UTC
@@ -17,20 +17,59 @@ from langchain_core.messages import HumanMessage
 from langchain_core.messages import SystemMessage
 import pandas as pd
 import snowflake.connector
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import serialization
 import requests
+
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 def _env_or_default(name: str, default: str) -> str:
     value = os.getenv(name)
     return value.strip() if value and value.strip() else default
 
 
+def _load_private_key() -> bytes:
+    private_key_b64 = os.getenv("SNOWFLAKE_PRIVATE_KEY_B64")
+    private_key_pem = os.getenv("SNOWFLAKE_PRIVATE_KEY_PEM")
+    private_key_path = _env_or_default(
+        "SNOWFLAKE_PRIVATE_KEY_PATH",
+        os.path.join(os.path.dirname(__file__), "snowflake_keys", "rsa_key.p8"),
+    )
+    private_key_passphrase = _env_or_default(
+        "SNOWFLAKE_PRIVATE_KEY_PASSPHRASE",
+        "Murtaza@1971",
+    )
+
+    if private_key_b64:
+        key_data = base64.b64decode(private_key_b64)
+    elif private_key_pem:
+        key_data = private_key_pem.encode()
+    else:
+        with open(private_key_path, "rb") as key_file:
+            key_data = key_file.read()
+
+    private_key = serialization.load_pem_private_key(
+        key_data,
+        password=private_key_passphrase.encode(),
+        backend=default_backend(),
+    )
+
+    return private_key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+
 SNOWFLAKE_CONFIG = {
     "user": _env_or_default("SNOWFLAKE_USER", "ahusain"),
-    "password": _env_or_default("SNOWFLAKE_PASSWORD", "Murtaza@40401059"),
     "account": _env_or_default("SNOWFLAKE_ACCOUNT", "ua60309.south-central-us.azure"),
+    "private_key": _load_private_key(),
     "warehouse": _env_or_default("SNOWFLAKE_WAREHOUSE", "AADIBIO_COMPUTE"),
     "database": _env_or_default("SNOWFLAKE_DATABASE", "AADIBIO_CAI"),
     "schema": _env_or_default("SNOWFLAKE_SCHEMA", "AADIBIO_CAI_SCHEMA"),
+    "role": _env_or_default("SNOWFLAKE_ROLE", "CONVERSATIONAL_AI"),
+    "client_session_keep_alive": True,
 }
 
 
@@ -43,23 +82,13 @@ _mask_map   = {}   # original → masked
 _demask_map = {}   # masked   → original  (inverted _mask_map)
 
 
-def run_snowflake_query(query):
-    conn = snowflake.connector.connect(**SNOWFLAKE_CONFIG)
-
-    cursor = conn.cursor()
-    cursor.execute(query)
-
-    # Fetch data
-    data = cursor.fetchall()
-    columns = [col[0] for col in cursor.description]
-
-    # Convert to DataFrame
-    df = pd.DataFrame(data, columns=columns)
-
-    cursor.close()
-    conn.close()
-
-    return df
+def run_snowflake_query(query: str) -> pd.DataFrame:
+    with snowflake.connector.connect(**SNOWFLAKE_CONFIG) as conn:
+        with conn.cursor() as cur:
+            cur.execute(query)
+            rows = cur.fetchall()
+            columns = [col[0] for col in cur.description]
+            return pd.DataFrame(rows, columns=columns)
 
 # def run_snowflake_query(query):
 #     conn = snowflake.connector.connect(
@@ -97,25 +126,15 @@ def load_masking_table_snowflake() -> None:
 
     global _mask_map, _demask_map
 
-    # Create Snowflake connection
-    conn = snowflake.connector.connect(**SNOWFLAKE_CONFIG)
-
-    query = f"""
-        SELECT original_value, masked_value
-        FROM {SNOWFLAKE_CONFIG["database"]}.{SNOWFLAKE_CONFIG["schema"]}.MASK_MAPPING
-    """
-
-    masking_df = pd.read_sql(query, conn)
-
-    conn.close()
+    masking_df = run_snowflake_query(
+        "SELECT original_value, masked_value "
+        f"FROM {SNOWFLAKE_CONFIG['database']}.{SNOWFLAKE_CONFIG['schema']}.MASK_MAPPING"
+    )
 
     # Build mask map
-    for _, row in masking_df.iterrows():
-        orig = row['ORIGINAL_VALUE']
-        masked = row['MASKED_VALUE']
-
-        if orig not in _mask_map:
-            _mask_map[orig] = masked
+    _mask_map = {}
+    for orig, masked in zip(masking_df["ORIGINAL_VALUE"], masking_df["MASKED_VALUE"]):
+        _mask_map.setdefault(orig, masked)
 
     # Invert mapping
     _demask_map = {masked: orig for orig, masked in _mask_map.items()}
@@ -148,8 +167,6 @@ def append_agent_trace(
     # Write back
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-
-import pandas as pd
 
 def get_descriptive_stats(df: pd.DataFrame) -> dict:
     stats = {}

@@ -41,7 +41,7 @@ if BACKEND_DIR not in sys.path:
 # Legacy modules use relative file paths (e.g., payload_store3.json),
 # so pin process cwd to backend directory for consistent resolution.
 os.chdir(BACKEND_DIR)
-load_dotenv(os.path.join(BACKEND_DIR, ".env"))
+load_dotenv(os.path.join(BACKEND_DIR, ".env"), override=True)
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
