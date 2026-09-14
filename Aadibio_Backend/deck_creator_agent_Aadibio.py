@@ -6674,13 +6674,20 @@ def chart_lexicon(facts: dict | None) -> dict | None:
     return {"on": on, "entities": entities, "measures": measures, "off": off, "numbers": facts.get("numbers") or set()}
 
 
+def excluded_chart_mentions(text: str, lex: dict | None) -> list[str]:
+    if not lex or not text:
+        return []
+    toks = _lex_tokens(text)
+    return sorted(toks & lex["off"])[:3]
+
+
 def off_chart_mentions(text: str, lex: dict | None) -> list[str]:
     if not lex or not text:
         return []
     toks = _lex_tokens(text)
     if toks & lex["on"]:
         return []
-    return sorted(toks & lex["off"])[:3]
+    return excluded_chart_mentions(text, lex)
 
 
 def chart_relevance(sentence: str, lex: dict | None) -> int:
@@ -6744,7 +6751,7 @@ def grounded_summary(summary: str, facts: dict | None, limit: int = 6000) -> str
         if not sentences:
             kept.append(line)
             continue
-        on_chart = [sentence for sentence in sentences if not off_chart_mentions(sentence, lex)]
+        on_chart = [sentence for sentence in sentences if not excluded_chart_mentions(sentence, lex)]
         removed += len(sentences) - len(on_chart)
         if not on_chart:
             if head:
@@ -6824,13 +6831,13 @@ def verify_chart_content(content: dict, df, block: dict, profile: dict, chart: d
             problems.append(f"kpi {index + 1} value cites unsupported numbers: {bad}")
     if lex:
         for field_name in ("headline", "insight"):
-            off = off_chart_mentions(content.get(field_name, ""), lex)
+            off = excluded_chart_mentions(content.get(field_name, ""), lex)
             if off:
-                problems.append(f"{field_name} names something not on the chart: {', '.join(off)}")
+                problems.append(f"{field_name} names something excluded from the chart: {', '.join(off)}")
         for index, bullet in enumerate(content.get("bullets", [])):
-            off = off_chart_mentions(bullet, lex)
+            off = excluded_chart_mentions(bullet, lex)
             if off:
-                problems.append(f"bullet {index + 1} names something not on the chart: {', '.join(off)}")
+                problems.append(f"bullet {index + 1} names something excluded from the chart: {', '.join(off)}")
     fact_profile = (chart or {}).get("profile") or profile
     has_extremes = bool(fact_profile.get("metrics"))
     joined = " ".join([content.get("headline", ""), content.get("insight", "")] + list(content.get("bullets", [])))
@@ -6848,7 +6855,7 @@ def fallback_content_with_chart(block: dict, df, profile: dict, cfg: DeckConfig,
     lex = chart_lexicon(chart)
     body = sections.get("takeaways") or sections.get("findings") or sections.get("overview") or summary
     sents = _sentences(body) or _sentences(summary)
-    on_chart = [sentence for sentence in sents if not off_chart_mentions(sentence, lex)]
+    on_chart = [sentence for sentence in sents if not excluded_chart_mentions(sentence, lex)]
     sents = on_chart or sents
 
     def rank(sentence: str) -> tuple:
@@ -6876,7 +6883,7 @@ def fallback_content_with_chart(block: dict, df, profile: dict, cfg: DeckConfig,
 
     insight = sections.get("implications") or ""
     if not insight:
-        pool = [x for x in _sentences(sections.get("overview") or summary) if _key(_condense(x)) not in seen and not off_chart_mentions(x, lex)]
+        pool = [x for x in _sentences(sections.get("overview") or summary) if _key(_condense(x)) not in seen and not excluded_chart_mentions(x, lex)]
         insight = " ".join(pool[-2:])
     if not insight and chart.get("shape_read"):
         insight = chart["shape_read"][:1].upper() + chart["shape_read"][1:] + "."
@@ -6901,23 +6908,23 @@ def _ground_to_chart(content: dict, chart: dict | None, cfg: DeckConfig | None =
     lex = chart_lexicon(chart)
     if not lex:
         return content
-    bullets = [bullet for bullet in (content.get("bullets") or []) if not off_chart_mentions(bullet, lex)]
+    bullets = [bullet for bullet in (content.get("bullets") or []) if not excluded_chart_mentions(bullet, lex)]
     if not bullets and chart.get("shape_read"):
         read = chart["shape_read"]
         bullets = [read[:1].upper() + read[1:] + "."]
     content["bullets"] = bullets
     kpis = [
         kpi for kpi in (content.get("kpis") or [])
-        if not off_chart_mentions(f"{kpi.get('label', '')} {kpi.get('value', '')}", lex)
+        if not excluded_chart_mentions(f"{kpi.get('label', '')} {kpi.get('value', '')}", lex)
     ]
     if not kpis and chart.get("frame") is not None:
         kpis = select_kpis(chart["frame"], chart["profile"], cfg or DeckConfig())
     content["kpis"] = kpis
     read = chart.get("shape_read") or ""
     read = (read[:1].upper() + read[1:] + ".") if read else ""
-    if off_chart_mentions(content.get("headline", ""), lex):
+    if excluded_chart_mentions(content.get("headline", ""), lex):
         content["headline"] = (bullets[0] if bullets else read) or content.get("headline", "")
-    if off_chart_mentions(content.get("insight", ""), lex):
+    if excluded_chart_mentions(content.get("insight", ""), lex):
         content["insight"] = read or content.get("insight", "")
     return content
 
@@ -6984,10 +6991,13 @@ def generate_slide_content_with_chart(block: dict, cfg: DeckConfig, df, profile:
                 {"role": "assistant", "content": reply},
                 {"role": "user", "content": _REPAIR_PROMPT.format(problem="\n".join(problems))},
             ]
-    raise DeckContentGenerationError(
-        "PPT chart content generation returned unresolved content errors for "
-        f"'{_debug_excerpt(block.get('question'), 80)}': {problems}"
+    log.warning(
+        "chart content generation fell back to deterministic copy for '%s': %s",
+        _debug_excerpt(block.get("question"), 80),
+        problems,
     )
+    fallback = fallback_content_with_chart(block, df, profile, cfg, chart)
+    return _finalise_chart_content(fallback, df, profile, cfg, chart)
 
 
 def _resolved_figure_for_slide(render: dict | None, theme: Theme, target_w_in: float, target_h_in: float, cfg: DeckConfig) -> tuple[Any, int, int] | None:
